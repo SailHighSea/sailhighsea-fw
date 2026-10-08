@@ -1,0 +1,920 @@
+<Window x:Class="SailHighSeaFireWall.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="SailHighSea Firewall"
+        Width="1240" Height="700"
+        MinWidth="900" MinHeight="560"
+        WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource WindowBrush}"
+        Foreground="{DynamicResource TextBrush}"
+        FontFamily="Segoe UI Variable Text, Segoe UI"
+        UseLayoutRounding="True"
+        Loaded="OnLoaded">
+
+    <!-- ===================================================================== -->
+    <!--  Dark theme (kept inline: this project has no App.xaml)                -->
+    <!-- ===================================================================== -->
+    <Window.Resources>
+
+        <!-- Palette -->
+        <SolidColorBrush x:Key="WindowBrush"           Color="#0E1116" />
+        <SolidColorBrush x:Key="SurfaceBrush"          Color="#151A22" />
+        <SolidColorBrush x:Key="SurfaceRaisedBrush"    Color="#1C232E" />
+        <SolidColorBrush x:Key="LineBrush"             Color="#2A3340" />
+        <SolidColorBrush x:Key="TextBrush"             Color="#E6EAF0" />
+        <SolidColorBrush x:Key="TextDimBrush"          Color="#8A94A6" />
+        <SolidColorBrush x:Key="AccentBrush"           Color="#4C8DFF" />
+        <SolidColorBrush x:Key="AccentSoftBrush"       Color="#1E2F4D" />
+        <SolidColorBrush x:Key="DangerBrush"           Color="#F05252" />
+        <SolidColorBrush x:Key="DangerSoftBrush"       Color="#3A1D24" />
+        <SolidColorBrush x:Key="SuccessBrush"          Color="#34C38F" />
+        <SolidColorBrush x:Key="SuccessSoftBrush"      Color="#12302A" />
+        <SolidColorBrush x:Key="WarningBrush"          Color="#F5A524" />
+        <SolidColorBrush x:Key="RowHoverBrush"         Color="#19202A" />
+        <SolidColorBrush x:Key="RowSelectedBrush"      Color="#1D2A40" />
+        <SolidColorBrush x:Key="SwitchOffBrush"        Color="#3A4454" />
+        <SolidColorBrush x:Key="ScrollThumbBrush"      Color="#3A4454" />
+        <SolidColorBrush x:Key="ScrollThumbHoverBrush" Color="#566177" />
+        <SolidColorBrush x:Key="ScrimBrush"            Color="#B3000000" />
+
+        <!-- Buttons -->
+        <Style TargetType="Button">
+            <Setter Property="Background" Value="{StaticResource SurfaceRaisedBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource LineBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="14,8" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Grid>
+                            <Border Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="8" />
+                            <Border x:Name="Overlay" Background="White" Opacity="0" CornerRadius="8" IsHitTestVisible="False" />
+                            <ContentPresenter Margin="{TemplateBinding Padding}"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              RecognizesAccessKey="True" />
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Overlay" Property="Opacity" Value="0.07" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Overlay" Property="Opacity" Value="0.14" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.45" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="AccentButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Background" Value="{StaticResource AccentBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+
+        <!-- TextBox -->
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="{StaticResource SurfaceRaisedBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="CaretBrush" Value="{StaticResource TextBrush}" />
+            <Setter Property="SelectionBrush" Value="{StaticResource AccentBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource LineBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="12,9" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TextBox">
+                        <Border x:Name="Bd"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="8">
+                            <ScrollViewer x:Name="PART_ContentHost"
+                                          Margin="{TemplateBinding Padding}"
+                                          VerticalAlignment="Center"
+                                          Focusable="False"
+                                          HorizontalScrollBarVisibility="Hidden"
+                                          VerticalScrollBarVisibility="Hidden" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Switch (ToggleButton). The "on" colour comes from Background. -->
+        <Style x:Key="SwitchToggle" TargetType="ToggleButton">
+            <Setter Property="Background" Value="{StaticResource AccentBrush}" />
+            <Setter Property="Width" Value="46" />
+            <Setter Property="Height" Value="26" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Grid Background="Transparent">
+                            <Border x:Name="Track" CornerRadius="13" Background="{StaticResource SwitchOffBrush}" />
+                            <Ellipse x:Name="Knob" Width="20" Height="20" Fill="White"
+                                     HorizontalAlignment="Left" Margin="3,0,0,0" />
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Track" Property="Background"
+                                        Value="{Binding Background, RelativeSource={RelativeSource TemplatedParent}}" />
+                                <Setter TargetName="Knob" Property="HorizontalAlignment" Value="Right" />
+                                <Setter TargetName="Knob" Property="Margin" Value="0,0,3,0" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.5" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="AllowSwitch" TargetType="ToggleButton" BasedOn="{StaticResource SwitchToggle}">
+            <Setter Property="Background" Value="{StaticResource SuccessBrush}" />
+        </Style>
+
+        <!-- Segmented filter buttons (RadioButton) -->
+        <Style x:Key="SegmentRadio" TargetType="RadioButton">
+            <Setter Property="Foreground" Value="{StaticResource TextDimBrush}" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Margin" Value="6,0,0,0" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="Bd"
+                                Background="Transparent"
+                                BorderBrush="{StaticResource LineBrush}"
+                                BorderThickness="1"
+                                CornerRadius="8"
+                                Padding="14,9">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{StaticResource SurfaceRaisedBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{StaticResource AccentSoftBrush}" />
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                                <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Scroll bars -->
+        <Style x:Key="ScrollThumbStyle" TargetType="Thumb">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Thumb">
+                        <Border x:Name="T" CornerRadius="4" Margin="2" Background="{StaticResource ScrollThumbBrush}" />
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="T" Property="Background" Value="{StaticResource ScrollThumbHoverBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsDragging" Value="True">
+                                <Setter TargetName="T" Property="Background" Value="{StaticResource ScrollThumbHoverBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="ScrollPageButtonStyle" TargetType="RepeatButton">
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="IsTabStop" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RepeatButton">
+                        <Border Background="Transparent" />
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="ScrollBar">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Width" Value="12" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ScrollBar">
+                        <Grid Background="Transparent">
+                            <Track x:Name="PART_Track" IsDirectionReversed="True">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Command="ScrollBar.PageUpCommand" Style="{StaticResource ScrollPageButtonStyle}" />
+                                </Track.DecreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb Style="{StaticResource ScrollThumbStyle}" />
+                                </Track.Thumb>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Command="ScrollBar.PageDownCommand" Style="{StaticResource ScrollPageButtonStyle}" />
+                                </Track.IncreaseRepeatButton>
+                            </Track>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="Orientation" Value="Horizontal">
+                    <Setter Property="Width" Value="Auto" />
+                    <Setter Property="Height" Value="12" />
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="ScrollBar">
+                                <Grid Background="Transparent">
+                                    <Track x:Name="PART_Track" IsDirectionReversed="False">
+                                        <Track.DecreaseRepeatButton>
+                                            <RepeatButton Command="ScrollBar.PageLeftCommand" Style="{StaticResource ScrollPageButtonStyle}" />
+                                        </Track.DecreaseRepeatButton>
+                                        <Track.Thumb>
+                                            <Thumb Style="{StaticResource ScrollThumbStyle}" />
+                                        </Track.Thumb>
+                                        <Track.IncreaseRepeatButton>
+                                            <RepeatButton Command="ScrollBar.PageRightCommand" Style="{StaticResource ScrollPageButtonStyle}" />
+                                        </Track.IncreaseRepeatButton>
+                                    </Track>
+                                </Grid>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- ToolTip -->
+        <Style TargetType="ToolTip">
+            <Setter Property="Background" Value="{StaticResource SurfaceRaisedBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource LineBrush}" />
+            <Setter Property="Padding" Value="8,5" />
+        </Style>
+
+        <!-- DataGrid -->
+        <Style x:Key="HeaderGripperStyle" TargetType="Thumb">
+            <Setter Property="Width" Value="6" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Cursor" Value="SizeWE" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Thumb">
+                        <Border Background="{TemplateBinding Background}" />
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{StaticResource TextDimBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource LineBrush}" />
+            <Setter Property="BorderThickness" Value="0,0,0,1" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Padding" Value="12,0" />
+            <Setter Property="HorizontalContentAlignment" Value="Left" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="DataGridColumnHeader">
+                        <Grid>
+                            <Border Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    Padding="{TemplateBinding Padding}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <ContentPresenter VerticalAlignment="Center"
+                                                      HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                      RecognizesAccessKey="True" />
+                                    <Path x:Name="SortArrow"
+                                          Grid.Column="1"
+                                          Width="8" Height="5"
+                                          Margin="8,0,0,0"
+                                          Stretch="Fill"
+                                          Visibility="Collapsed"
+                                          VerticalAlignment="Center"
+                                          Fill="{TemplateBinding Foreground}"
+                                          Data="M0,0 L1,0 0.5,1 Z"
+                                          RenderTransformOrigin="0.5,0.5" />
+                                </Grid>
+                            </Border>
+                            <Thumb x:Name="PART_LeftHeaderGripper" HorizontalAlignment="Left" Style="{StaticResource HeaderGripperStyle}" />
+                            <Thumb x:Name="PART_RightHeaderGripper" HorizontalAlignment="Right" Style="{StaticResource HeaderGripperStyle}" />
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="SortDirection" Value="Ascending">
+                                <Setter TargetName="SortArrow" Property="Visibility" Value="Visible" />
+                                <Setter TargetName="SortArrow" Property="RenderTransform">
+                                    <Setter.Value>
+                                        <RotateTransform Angle="180" />
+                                    </Setter.Value>
+                                </Setter>
+                            </Trigger>
+                            <Trigger Property="SortDirection" Value="Descending">
+                                <Setter TargetName="SortArrow" Property="Visibility" Value="Visible" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="DataGridRow">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="ValidationErrorTemplate" Value="{x:Null}" />
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="{StaticResource RowHoverBrush}" />
+                </Trigger>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="{StaticResource RowSelectedBrush}" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style TargetType="DataGridCell">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="12,0" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="DataGridCell">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderThickness="0"
+                                Padding="{TemplateBinding Padding}"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter VerticalAlignment="Center" />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="DataGrid">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="GridLinesVisibility" Value="None" />
+            <Setter Property="HeadersVisibility" Value="Column" />
+            <Setter Property="RowHeaderWidth" Value="0" />
+            <Setter Property="ColumnHeaderHeight" Value="42" />
+            <Setter Property="RowHeight" Value="48" />
+            <Setter Property="AutoGenerateColumns" Value="False" />
+            <Setter Property="CanUserAddRows" Value="False" />
+            <Setter Property="CanUserDeleteRows" Value="False" />
+            <Setter Property="CanUserResizeRows" Value="False" />
+            <Setter Property="IsReadOnly" Value="True" />
+            <Setter Property="SelectionUnit" Value="FullRow" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+        </Style>
+
+    </Window.Resources>
+
+    <Grid>
+
+        <!-- ================================================================= -->
+        <!--  Main content (disabled while a panel is open)                     -->
+        <!-- ================================================================= -->
+        <Grid x:Name="MainContent">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <!-- ============================ Status bar ============================ -->
+            <Border Grid.Row="0"
+                    Background="{StaticResource SurfaceBrush}"
+                    BorderBrush="{StaticResource LineBrush}"
+                    BorderThickness="0,0,0,1"
+                    Padding="24,16">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <Border Width="36" Height="36" CornerRadius="10" Background="{StaticResource AccentBrush}">
+                            <TextBlock Text="&#xE72E;"
+                                       FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                       FontSize="17"
+                                       Foreground="White"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center" />
+                        </Border>
+                        <TextBlock Text="SailHighSea Firewall"
+                                   FontSize="22"
+                                   FontWeight="SemiBold"
+                                   Margin="12,0,0,0"
+                                   VerticalAlignment="Center" />
+
+                        <Border x:Name="StatusPill"
+                                Margin="20,0,0,0"
+                                Padding="11,5"
+                                CornerRadius="13"
+                                Background="{StaticResource SurfaceRaisedBrush}"
+                                VerticalAlignment="Center">
+                            <StackPanel Orientation="Horizontal">
+                                <Ellipse x:Name="StatusDot"
+                                         Width="8" Height="8"
+                                         Fill="{StaticResource WarningBrush}"
+                                         VerticalAlignment="Center" />
+                                <TextBlock x:Name="StatusText"
+                                           Text="Checking filtering engine…"
+                                           Margin="8,0,0,0"
+                                           FontSize="12"
+                                           FontWeight="SemiBold" />
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+
+                    <WrapPanel Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="20,0,0,0">
+                        <Button x:Name="FilterButton"
+                                Style="{StaticResource AccentButton}"
+                                Margin="8,3,0,3"
+                                ToolTip="Switch default-deny filtering on or off: only allowed applications can reach the network while it is on"
+                                Click="OnFilterToggleClick">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock x:Name="FilterButtonIcon" Text="&#xE72E;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Margin="0,1,8,0" VerticalAlignment="Center" />
+                                <TextBlock x:Name="FilterButtonText" Text="Enable Filters" />
+                            </StackPanel>
+                        </Button>
+                        <Button x:Name="AddButton"
+                                Margin="8,3,0,3"
+                                ToolTip="Pick a running program or browse for an .exe and allow it to use the network"
+                                Click="OnAddApplicationClick">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE710;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Margin="0,1,8,0" VerticalAlignment="Center" />
+                                <TextBlock Text="Add Application" />
+                            </StackPanel>
+                        </Button>
+                        <Button Margin="8,3,0,3"
+                                ToolTip="Remove the rule of the selected allowed application(s)"
+                                Click="OnRemoveRuleClick">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE74D;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Margin="0,1,8,0" VerticalAlignment="Center" />
+                                <TextBlock Text="Remove Rule" />
+                            </StackPanel>
+                        </Button>
+                        <Button x:Name="RefreshButton"
+                                Margin="8,3,0,3"
+                                ToolTip="Re-scan the running processes"
+                                Click="OnRefreshClick">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE72C;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Margin="0,1,8,0" VerticalAlignment="Center" />
+                                <TextBlock Text="Refresh Processes" />
+                            </StackPanel>
+                        </Button>
+                        <Button x:Name="NotificationsButton"
+                                Margin="8,3,0,3"
+                                ToolTip="Show or hide the pop-up that offers to allow a blocked application"
+                                Click="OnNotificationsToggleClick">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE7E7;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Margin="0,1,8,0" VerticalAlignment="Center" />
+                                <TextBlock x:Name="NotificationsText" Text="Notifications: On" />
+                            </StackPanel>
+                        </Button>
+                        <Button Margin="8,3,0,3"
+                                Click="OnSettingsClick">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE713;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" Margin="0,1,8,0" VerticalAlignment="Center" />
+                                <TextBlock Text="Settings" />
+                            </StackPanel>
+                        </Button>
+                    </WrapPanel>
+                </Grid>
+            </Border>
+
+            <!-- ============================ Search / filter ============================ -->
+            <Grid Grid.Row="1" Margin="24,18,24,14">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <Grid>
+                    <TextBox x:Name="SearchBox"
+                             Padding="38,9,12,9"
+                             TextChanged="OnSearchChanged" />
+                    <TextBlock Text="&#xE71E;"
+                               FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                               Foreground="{StaticResource TextDimBrush}"
+                               Margin="14,0,0,0"
+                               VerticalAlignment="Center"
+                               IsHitTestVisible="False" />
+                    <TextBlock Text="Search by application name or executable path…"
+                               Foreground="{StaticResource TextDimBrush}"
+                               Margin="39,0,0,0"
+                               VerticalAlignment="Center"
+                               IsHitTestVisible="False">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Text, ElementName=SearchBox}" Value="">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </Grid>
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="16,0,0,0">
+                    <RadioButton x:Name="FilterAll" Content="All" GroupName="StatusFilter"
+                                 IsChecked="True" Style="{StaticResource SegmentRadio}"
+                                 Checked="OnFilterChanged" />
+                    <RadioButton x:Name="FilterBlocked" Content="Blocked" GroupName="StatusFilter"
+                                 Style="{StaticResource SegmentRadio}"
+                                 Checked="OnFilterChanged" />
+                    <RadioButton x:Name="FilterAllowed" Content="Allowed" GroupName="StatusFilter"
+                                 Style="{StaticResource SegmentRadio}"
+                                 Checked="OnFilterChanged" />
+                </StackPanel>
+            </Grid>
+
+            <!-- ============================ Applications grid ============================ -->
+            <Border Grid.Row="2"
+                    Margin="24,0"
+                    Background="{StaticResource SurfaceBrush}"
+                    BorderBrush="{StaticResource LineBrush}"
+                    BorderThickness="1"
+                    CornerRadius="12"
+                    Padding="0,0,0,6">
+                <DataGrid x:Name="AppsGrid" SelectionMode="Extended">
+                    <DataGrid.Columns>
+
+                        <!-- Application Name -->
+                        <DataGridTemplateColumn Header="Application Name" Width="1.3*" SortMemberPath="Name">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <Grid VerticalAlignment="Center">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Ellipse Width="8" Height="8" Margin="0,0,10,0">
+                                            <Ellipse.Style>
+                                                <Style TargetType="Ellipse">
+                                                    <Setter Property="Fill" Value="{StaticResource SwitchOffBrush}" />
+                                                    <Setter Property="ToolTip" Value="Not running" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsRunning}" Value="True">
+                                                            <Setter Property="Fill" Value="{StaticResource SuccessBrush}" />
+                                                            <Setter Property="ToolTip" Value="Running" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Ellipse.Style>
+                                        </Ellipse>
+                                        <TextBlock Grid.Column="1"
+                                                   Text="{Binding Name}"
+                                                   FontWeight="SemiBold"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   ToolTip="{Binding Name}" />
+                                    </Grid>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+
+                        <!-- Executable Path -->
+                        <DataGridTextColumn Header="Executable Path" Binding="{Binding Path=Path}" Width="2.4*">
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Foreground" Value="{StaticResource TextDimBrush}" />
+                                    <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                                    <Setter Property="ToolTip" Value="{Binding Path=Path}" />
+                                </Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+
+                        <!-- Rule Status -->
+                        <DataGridTemplateColumn Header="Rule Status" Width="130" SortMemberPath="IsAllowed">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <Border HorizontalAlignment="Left" VerticalAlignment="Center" CornerRadius="11" Padding="11,3">
+                                        <Border.Style>
+                                            <Style TargetType="Border">
+                                                <Setter Property="Background" Value="{StaticResource SurfaceRaisedBrush}" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsDenied}" Value="True">
+                                                        <Setter Property="Background" Value="{StaticResource DangerSoftBrush}" />
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding IsAllowed}" Value="True">
+                                                        <Setter Property="Background" Value="{StaticResource SuccessSoftBrush}" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Border.Style>
+                                        <TextBlock Text="{Binding StatusText}" FontSize="12" FontWeight="SemiBold">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Foreground" Value="{StaticResource TextDimBrush}" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsDenied}" Value="True">
+                                                            <Setter Property="Foreground" Value="{StaticResource DangerBrush}" />
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding IsAllowed}" Value="True">
+                                                            <Setter Property="Foreground" Value="{StaticResource SuccessBrush}" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </Border>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+
+                        <!-- Direction -->
+                        <DataGridTextColumn Header="Direction" Binding="{Binding DirectionText}" Width="110">
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Foreground" Value="{StaticResource TextDimBrush}" />
+                                </Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+
+                        <!-- Action toggle: on = allowed -->
+                        <DataGridTemplateColumn Header="Action" Width="90" CanUserSort="False">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <ToggleButton Style="{StaticResource AllowSwitch}"
+                                                  HorizontalAlignment="Left"
+                                                  IsChecked="{Binding IsAllowed, Mode=OneWay}"
+                                                  IsEnabled="{Binding IsNotBusy}"
+                                                  ToolTip="On = allow this application to use the network"
+                                                  Click="OnToggleClick" />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+
+                    </DataGrid.Columns>
+                </DataGrid>
+            </Border>
+
+            <!-- ============================ Footer ============================ -->
+            <Border Grid.Row="3"
+                    Margin="0,14,0,0"
+                    Padding="24,10"
+                    Background="{StaticResource SurfaceBrush}"
+                    BorderBrush="{StaticResource LineBrush}"
+                    BorderThickness="0,1,0,0">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="FooterMessage"
+                               Text="Ready"
+                               FontSize="12"
+                               Foreground="{StaticResource TextDimBrush}"
+                               TextTrimming="CharacterEllipsis" />
+                    <TextBlock x:Name="SummaryText"
+                               Grid.Column="1"
+                               Margin="16,0,0,0"
+                               FontSize="12"
+                               Foreground="{StaticResource TextDimBrush}" />
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- ================================================================= -->
+        <!--  Panel: Block Application (running-process picker)                  -->
+        <!-- ================================================================= -->
+        <Grid x:Name="AddOverlay" Visibility="Collapsed" Background="{StaticResource ScrimBrush}">
+            <Border MaxWidth="780" MaxHeight="600" Margin="32"
+                    Background="{StaticResource SurfaceBrush}"
+                    BorderBrush="{StaticResource LineBrush}"
+                    BorderThickness="1"
+                    CornerRadius="14"
+                    Padding="24">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0" Margin="0,0,0,14">
+                        <TextBlock Text="Choose an application to allow" FontSize="20" FontWeight="SemiBold" />
+                        <TextBlock x:Name="PickerStatus"
+                                   Margin="0,4,0,0"
+                                   FontSize="12"
+                                   TextWrapping="Wrap"
+                                   Foreground="{StaticResource TextDimBrush}"
+                                   Text="Scanning running processes…" />
+                    </StackPanel>
+
+                    <Grid Grid.Row="1" Margin="0,0,0,12">
+                        <TextBox x:Name="PickerSearchBox" Padding="38,9,12,9" TextChanged="OnPickerSearchChanged" />
+                        <TextBlock Text="&#xE71E;"
+                                   FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                   Foreground="{StaticResource TextDimBrush}"
+                                   Margin="14,0,0,0"
+                                   VerticalAlignment="Center"
+                                   IsHitTestVisible="False" />
+                        <TextBlock Text="Filter running applications…"
+                                   Foreground="{StaticResource TextDimBrush}"
+                                   Margin="39,0,0,0"
+                                   VerticalAlignment="Center"
+                                   IsHitTestVisible="False">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Text, ElementName=PickerSearchBox}" Value="">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </Grid>
+
+                    <Border Grid.Row="2"
+                            Background="{StaticResource WindowBrush}"
+                            BorderBrush="{StaticResource LineBrush}"
+                            BorderThickness="1"
+                            CornerRadius="12"
+                            Padding="0,0,0,6">
+                        <DataGrid x:Name="PickerGrid"
+                                  SelectionMode="Single"
+                                  SelectionChanged="OnPickerSelectionChanged"
+                                  MouseDoubleClick="OnPickerDoubleClick">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Application" Binding="{Binding Name}" Width="1.2*">
+                                    <DataGridTextColumn.ElementStyle>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="FontWeight" Value="SemiBold" />
+                                            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                                        </Style>
+                                    </DataGridTextColumn.ElementStyle>
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="Executable Path" Binding="{Binding Path=Path}" Width="2.4*">
+                                    <DataGridTextColumn.ElementStyle>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Foreground" Value="{StaticResource TextDimBrush}" />
+                                            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                                            <Setter Property="ToolTip" Value="{Binding Path=Path}" />
+                                        </Style>
+                                    </DataGridTextColumn.ElementStyle>
+                                </DataGridTextColumn>
+                                <DataGridTextColumn Header="Processes" Binding="{Binding Instances}" Width="90">
+                                    <DataGridTextColumn.ElementStyle>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Foreground" Value="{StaticResource TextDimBrush}" />
+                                        </Style>
+                                    </DataGridTextColumn.ElementStyle>
+                                </DataGridTextColumn>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Border>
+
+                    <Grid Grid.Row="3" Margin="0,16,0,0">
+                        <Button HorizontalAlignment="Left" Content="Browse…" Click="OnPickerBrowseClick" />
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                            <Button Content="Cancel" Click="OnPickerCancelClick" />
+                            <Button x:Name="PickerAllowButton"
+                                    Margin="8,0,0,0"
+                                    Content="Allow"
+                                    IsEnabled="False"
+                                    Style="{StaticResource AccentButton}"
+                                    Click="OnPickerAllowClick" />
+                        </StackPanel>
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- ================================================================= -->
+        <!--  Panel: Settings                                                    -->
+        <!-- ================================================================= -->
+        <Grid x:Name="SettingsOverlay" Visibility="Collapsed" Background="{StaticResource ScrimBrush}">
+            <Border MaxWidth="500" Margin="32"
+                    VerticalAlignment="Center"
+                    Background="{StaticResource SurfaceBrush}"
+                    BorderBrush="{StaticResource LineBrush}"
+                    BorderThickness="1"
+                    CornerRadius="14"
+                    Padding="24">
+                <StackPanel>
+                    <TextBlock Text="Settings" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,20" />
+
+                    <Grid Margin="0,0,0,18">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="Hide Windows system apps" FontWeight="SemiBold" />
+                            <TextBlock Text="Leave programs inside the Windows folder out of the list. You can still block them through Block Application."
+                                       Margin="0,3,18,0"
+                                       FontSize="12"
+                                       TextWrapping="Wrap"
+                                       Foreground="{StaticResource TextDimBrush}" />
+                        </StackPanel>
+                        <ToggleButton x:Name="HideWindowsSwitch"
+                                      Grid.Column="1"
+                                      VerticalAlignment="Center"
+                                      Style="{StaticResource SwitchToggle}" />
+                    </Grid>
+
+                    <Grid Margin="0,0,0,18">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="Refresh running processes automatically" FontWeight="SemiBold" />
+                            <TextBlock Text="Re-scan every 10 seconds so newly started programs show up without clicking Refresh Processes."
+                                       Margin="0,3,18,0"
+                                       FontSize="12"
+                                       TextWrapping="Wrap"
+                                       Foreground="{StaticResource TextDimBrush}" />
+                        </StackPanel>
+                        <ToggleButton x:Name="AutoRefreshSwitch"
+                                      Grid.Column="1"
+                                      VerticalAlignment="Center"
+                                      Style="{StaticResource SwitchToggle}" />
+                    </Grid>
+
+                    <Grid Margin="0,0,0,18">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="Allow DNS for all applications" FontWeight="SemiBold" />
+                            <TextBlock Text="Keep name lookups (port 53) open for everyone so allowed apps can resolve addresses. Takes effect the next time you enable filters."
+                                       Margin="0,3,18,0"
+                                       FontSize="12"
+                                       TextWrapping="Wrap"
+                                       Foreground="{StaticResource TextDimBrush}" />
+                        </StackPanel>
+                        <ToggleButton x:Name="AllowDnsSwitch"
+                                      Grid.Column="1"
+                                      VerticalAlignment="Center"
+                                      Style="{StaticResource SwitchToggle}" />
+                    </Grid>
+
+                    <Border BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0" Padding="0,16,0,0">
+                        <StackPanel>
+                            <TextBlock Text="Filtering backend" FontSize="12" Foreground="{StaticResource TextDimBrush}" />
+                            <TextBlock x:Name="SettingsBackendText" Margin="0,2,0,12" TextWrapping="Wrap" />
+                            <TextBlock Text="Data folder" FontSize="12" Foreground="{StaticResource TextDimBrush}" />
+                            <TextBlock x:Name="SettingsDataFolderText" Margin="0,2,0,0" TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Border>
+
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,24,0,0">
+                        <Button Content="Cancel" Click="OnSettingsCancelClick" />
+                        <Button Margin="8,0,0,0"
+                                Content="Save"
+                                Style="{StaticResource AccentButton}"
+                                Click="OnSettingsSaveClick" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </Grid>
+
+    </Grid>
+</Window>

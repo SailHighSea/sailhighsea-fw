@@ -1,0 +1,30 @@
+#include <windows.h>
+#ifndef APP_VERSION_STR
+#define APP_VERSION_STR "0.2.0"
+#define APP_VERSION_NUM 0,2,0,0
+#endif
+100 ICON "app.ico"
+1 24 "app.manifest"
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION APP_VERSION_NUM
+ PRODUCTVERSION APP_VERSION_NUM
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904b0"
+    BEGIN
+      VALUE "FileDescription", "SailHighSea Firewall"
+      VALUE "ProductName", "SailHighSea Firewall"
+      VALUE "FileVersion", APP_VERSION_STR
+      VALUE "ProductVersion", APP_VERSION_STR
+      VALUE "OriginalFilename", "SailHighSea-Firewall.exe"
+      VALUE "LegalCopyright", "MIT License"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0409, 1200
+  END
+END

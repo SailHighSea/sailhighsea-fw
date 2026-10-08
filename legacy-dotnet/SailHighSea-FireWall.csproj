@@ -1,0 +1,58 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <!-- WfpEngine.cs uses pointers to talk to fwpuclnt.dll. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <AssemblyName>SailHighSeaFireWall</AssemblyName>
+    <RootNamespace>SailHighSeaFireWall</RootNamespace>
+    <!-- There is no App.xaml: Program.Main (in MainWindow.xaml.cs) starts the application. -->
+    <StartupObject>SailHighSeaFireWall.Program</StartupObject>
+
+    <Product>SailHighSea Firewall</Product>
+    <Description>Lightweight Windows Filtering Platform (WFP) firewall GUI</Description>
+    <Version>0.1.0</Version>
+    <Copyright>Copyright (c) 2026 SailHighSea Firewall contributors</Copyright>
+
+    <!-- Requests administrator rights at launch (WFP management needs them). -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+
+    <!-- Lets `dotnet build` / `dotnet publish` run from Linux or macOS CI as well. -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+  </PropertyGroup>
+
+  <!-- The WPF SDK leaves these out of the implicit usings; the code relies on them. -->
+  <ItemGroup>
+    <Using Include="System.IO" />
+    <Using Include="System.Threading" />
+    <Using Include="System.Threading.Tasks" />
+  </ItemGroup>
+
+  <!-- ===== Publishing: one self-contained .exe, no .NET install needed ===== -->
+  <PropertyGroup>
+    <!-- Override on the command line for ARM64: dotnet publish -r win-arm64 -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+
+    <!-- WPF's native libraries (wpfgfx, PresentationNative, ...) cannot be loaded from inside
+         the bundle, so they are packed into the exe and extracted to disk on first launch. -->
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+
+    <!-- Pre-compiled code for faster start-up. -->
+    <PublishReadyToRun>true</PublishReadyToRun>
+
+    <!-- Skip the localized resource folders that WPF would otherwise copy next to the exe. -->
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+
+    <!-- Do NOT enable PublishTrimmed: WPF is not trim-compatible. -->
+  </PropertyGroup>
+
+</Project>
