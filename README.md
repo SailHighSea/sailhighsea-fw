@@ -6,13 +6,17 @@
 
 <p align="center">
   A tiny, open-source Windows firewall for choosing which apps may go online.<br />
-  One small <code>.exe</code> (about 360 KB), no installer, no runtime, portable.
+  One small <code>.exe</code> (under 1 MB), no installer, no runtime, portable.
 </p>
 
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green.svg" /></a>
   <img alt="Platform: Windows 10/11" src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6.svg" />
   <img alt="Written in C" src="https://img.shields.io/badge/written%20in-C-555555.svg" />
+</p>
+
+<p align="center">
+  <img src="assets/screenshot.jpg" alt="SailHighSea Firewall in light and dark mode" width="900" />
 </p>
 
 ## What is SailHighSea Firewall?
@@ -45,8 +49,11 @@ something gets blocked, a small pop-up offers to allow it, for good or for a lim
   blocked, timed, running, Windows and invalid (missing file) entries, and a hover highlight.
 - **Dark, light or follow Windows** (the default), with a matching title bar. Sharp on high-DPI and
   multi-monitor setups.
-- **Notification-area icon.** Left-click shows or hides the window; the right-click menu has the
-  same Options.
+- **Notification-area icon.** Blue while filters are on, grey while they are off. Left-click shows or
+  hides the window; the right-click menu has the same Options.
+- **Connection log.** *Options > Connection log...* lists the connections that were blocked in this
+  session (time, application, protocol, remote address, repeat count) with **Allow App** and
+  **Copy**, which makes it easy to see what to allow.
 - **Options.** Start with Windows (an elevated scheduled task, no UAC prompt), start minimized,
   close / minimize to tray, always on top, allow DNS (port 53), keep filters after reboot, disable
   filters on exit, hide Windows system apps, show only running apps.
@@ -143,7 +150,7 @@ are skipped.
 | `native/main.c` | The whole application |
 | `native/build.sh` | mingw-w64 build script |
 | `native/app.rc`, `app.manifest`, `app.ico` | Resources: version info, administrator manifest, icon |
-| `assets/icon.png` | Icon used in this README |
+| `assets/icon.png`, `assets/screenshot.jpg` | Icon and screenshot used in this README |
 | `legacy-dotnet/` | The original .NET / WPF prototype, kept for reference (not released) |
 | `.github/workflows/build-release.yml` | CI build, automatic tagging and releases |
 
@@ -157,6 +164,8 @@ are skipped.
   `.exe`) and attach it to your GitHub issue. It records start-up, enabling and disabling
   filters, allow / block actions, errors and crash details. Only program *file names* are logged,
   never full paths or IP addresses, but please glance through it before sharing.
+- **Something stopped working.** Open **Options > Connection log...** to see which program was
+  blocked and where it tried to connect, select the line and click **Allow App**.
 - **A name lookup fails.** Check that *Allow DNS (port 53)* is on while filters are enabled. Browsers
   using their own encrypted DNS (DNS over HTTPS) ignore the Windows DNS setting.
 
@@ -168,7 +177,7 @@ are skipped.
   need package / service SID conditions, which are not implemented.
 - **Pop-ups are best effort.** They are built from WFP drop events, so an application can
   occasionally trigger one for a connection that is not a normal outbound attempt.
-- No connection log or per-port / per-address rules yet.
+- The connection log shows blocked attempts of the current session only (not allowed connections, nothing saved to disk). No per-port / per-address rules yet.
 - 64-bit Windows only.
 
 ## Contributing

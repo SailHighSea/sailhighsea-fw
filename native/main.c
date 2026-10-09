@@ -70,12 +70,13 @@ static const GUID COND_RPORT = {0xc35a604d, 0xd22b, 0x4e1a, {0x91, 0xb4, 0x68, 0
 #define NE_APP_ID_SET 0x20u
 
 enum { IDC_TOGGLE = 101, IDC_ALLOW, IDC_ADD, IDC_NOTIFY, IDC_OPTIONS, IDC_SEARCH, IDC_LIST, IDC_STATUS, IDC_DNSBTN,
-       IDM_DNS = 201, IDM_PERM, IDM_REFRESH, IDM_FOLDER, IDM_ABOUT, IDM_OPENLOG };
+       IDM_DNS = 201, IDM_PERM, IDM_REFRESH, IDM_FOLDER, IDM_ABOUT, IDM_OPENLOG, IDM_CONNLOG };
 #define IDC_NOTIF_ALLOW 301
 #define IDC_NOTIF_IGNORE 302
 #define IDC_NOTIF_15 303
+#define IDC_NOTIF_BLOCK 304
 #define IDC_DLG_1 601
-enum { IDM_ROW_ALLOW = 500, IDM_ROW_BLOCK, IDM_ROW_TIME = 510, IDM_PURGE = 260 };
+enum { IDM_ROW_ALLOW = 500, IDM_ROW_BLOCK, IDM_ROW_TIME = 510, IDM_ROW_CLEAR = 520, IDM_PURGE = 260 };
 #define TIMER_EXPIRE 7
 #define TIMER_TRAY 8
 static const int g_mins[] = {15, 30, 60, 120, 240, 480};
@@ -169,7 +170,7 @@ static wchar_t g_blockedFile[MAX_PATH];
 static int g_sortCol = -1; static BOOL g_sortAsc = TRUE;
 static wchar_t g_statusText[260]; static int g_sepX, g_sepY0, g_sepY1;
 static BOOL g_startMin, g_closeTray = TRUE, g_minTray, g_onTop, g_hideWin = TRUE, g_onlyRun, g_offExit, g_quit;
-static HICON g_iconBig, g_iconSmall, g_iconSmallOn;   /* g_iconSmallOn: green copy for the tray while filters are on */
+static HICON g_iconBig, g_iconSmall, g_iconSmallOff;   /* g_iconSmallOff: grey copy for the tray while filters are off */
 static HIMAGELIST g_sysIL;
 static HFONT g_fontBold;
 static BOOL g_wantMax;
@@ -276,7 +277,7 @@ static void DrawFlatButton(const DRAWITEMSTRUCT *di)
     BOOL accent = di->CtlID == IDC_TOGGLE || di->CtlID == IDC_NOTIF_ALLOW || di->CtlID == IDC_DLG_1 || (di->CtlID == IDC_NOTIFY && g_notify) || (di->CtlID == IDC_DNSBTN && g_dnsSel >= 0);
     UINT dpi = GetDpiForWindow(di->hwndItem);
     int radius = MulDiv(8, (int)dpi, 96);
-    BOOL onPanel = di->CtlID == IDC_NOTIF_ALLOW || di->CtlID == IDC_NOTIF_15 || di->CtlID == IDC_NOTIF_IGNORE;   /* pop-up card uses the panel colour */
+    BOOL onPanel = di->CtlID == IDC_NOTIF_ALLOW || di->CtlID == IDC_NOTIF_15 || di->CtlID == IDC_NOTIF_IGNORE || di->CtlID == IDC_NOTIF_BLOCK;   /* pop-up card uses the panel colour */
     HBRUSH bg = CreateSolidBrush(onPanel ? cPanel : cBg);
     FillRect(di->hDC, &r, bg); DeleteObject(bg);
     if (accent) {
@@ -328,8 +329,8 @@ static HICON IconAtSize(int px, HICON *cache, int *cacheSz)
     return *cache;
 }
 
-/* Green copy of an icon (hue moved to green, white/grey parts kept): the tray icon while filters are on. */
-static HICON TintGreen(HICON src)
+/* Grey copy of an icon (colours dropped, lifted a little so it stays visible on a dark taskbar): the tray icon while filters are off. */
+static HICON TintGray(HICON src)
 {
     ICONINFO ii; BITMAP bm; HICON out = NULL;
     if (!src || !GetIconInfo(src, &ii)) return NULL;
@@ -342,12 +343,10 @@ static HICON TintGreen(HICON src)
         if (nb && bits && GetDIBits(dc, orig, 0, (UINT)h, bits, &bi, DIB_RGB_COLORS) == h) {
             BYTE *px = (BYTE *)bits;
             for (int i = 0; i < w * h; i++, px += 4) {
-                int b = px[0], g = px[1], r = px[2], mx = max(r, max(g, b)), mn = min(r, min(g, b)), d = mx - mn, sat;
-                if (d < 20 || mx == 0) continue;                /* white / grey parts stay as they are */
-                sat = d * 255 / mx; if (sat < 150) sat = 150;   /* vivid green */
-                px[2] = (BYTE)(mx * (255 - sat) / 255);         /* R */
-                px[1] = (BYTE)mx;                               /* G */
-                px[0] = (BYTE)(mx * (255 - sat * 75 / 100) / 255); /* B (hue about 135 degrees) */
+                int lum = (px[2] * 30 + px[1] * 59 + px[0] * 11) / 100;
+                if (px[3] == 255 || px[3] == 0) lum = 70 + lum * 65 / 100;   /* (soft edge pixels keep their value) */
+                if (lum > 255) lum = 255;
+                px[0] = px[1] = px[2] = (BYTE)lum;
             }
             ii.hbmColor = nb;
             out = CreateIconIndirect(&ii);
@@ -1088,7 +1087,7 @@ static void StartWatching(void)
 
 static void UpdateWatcher(void)
 {
-    if (g_filtersOn && g_notify) StartWatching(); else StopWatching();
+    if (g_filtersOn) StartWatching(); else StopWatching();   /* needed for the connection log, even with pop-ups off */
 }
 
 /* ------------------------------------------------------------------ */
@@ -1335,6 +1334,15 @@ static BOOL HasTimedRules(void)
     return FALSE;
 }
 
+/* Back to "No Rule": removes the allow rule and/or the blocked entry for this program. */
+static void ClearRulePath(const wchar_t *path)
+{
+    Log(L"Clear rule %ls", BaseName(path));
+    for (int i = 0; i < g_nrules; i++)
+        if (SameFileName(g_rules[i].path, path)) { DropRule(i); SaveRules(); break; }
+    RemoveBlocked(path);
+}
+
 static void BlockPath(const wchar_t *path)
 {
     Log(L"Block %ls", BaseName(path));
@@ -1427,13 +1435,14 @@ static BOOL g_popupMenuOpen;
 
 static void ShowNextNotice(void);
 
-static void ClosePopup(int mode)   /* 0 ignore, 1 allow (permanent), >= 2: allow for that many minutes */
+static void ClosePopup(int mode)   /* 0 ignore, -1 block, 1 allow (permanent), >= 2: allow for that many minutes */
 {
     if (!g_popup) return;
     if (g_current.expiring) {
         if (mode == 1) { if (AllowPathFor(g_current.path, 0)) RefreshApps(); }          /* make permanent */
         else if (mode >= 2) { ExtendRule(g_current.path, mode); RefreshApps(); }       /* add time */
     }
+    else if (mode == -1) { BlockPath(g_current.path); RefreshApps(); }
     else if (mode) { if (AllowPathFor(g_current.path, mode == 1 ? 0 : mode)) RefreshApps(); }
     else SuppressFor(g_current.path, 5 * 60 * 1000);
     DestroyWindow(g_popup);
@@ -1489,6 +1498,7 @@ static LRESULT CALLBACK PopupProc(HWND h, UINT m, WPARAM w, LPARAM l)
             } else ClosePopup(15);
             return 0;
         }
+        if (LOWORD(w) == IDC_NOTIF_BLOCK) { ClosePopup(-1); return 0; }
         if (LOWORD(w) == IDC_NOTIF_IGNORE) { ClosePopup(0); return 0; }
         break;
     case WM_DRAWITEM:
@@ -1594,15 +1604,17 @@ static void ShowNextNotice(void)
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
         UINT dpi = GetDpiForWindow(g_hwnd);
         #define PS(v) MulDiv((v), (int)dpi, 96)
-        int W = PS(380), H = PS(186), m = PS(16), bw = PS(96), bh = PS(34), gp = PS(8), by = PS(110);
+        int W = PS(424), H = PS(186), m = PS(16), bw = PS(92), bh = PS(34), gp = PS(8), by = PS(110);
         g_popup = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"SHSFWPopup", L"", WS_POPUP | WS_BORDER | WS_CLIPCHILDREN,
                                   wa.right - W - PS(16), wa.bottom - H - PS(16), W, H, NULL, NULL, g_inst, NULL);
         if (!g_popup) return;
         { int pref = 2; COLORREF bc = cLine; DwmSetWindowAttribute(g_popup, 33, &pref, sizeof pref); DwmSetWindowAttribute(g_popup, 34, &bc, sizeof bc); }
         BOOL ex = g_current.expiring;
-        HWND b1 = MakeChild(g_popup, L"BUTTON", ex ? L"Always" : L"Allow", BS_OWNERDRAW, W - m - 3 * bw - 2 * gp, by, bw, bh, IDC_NOTIF_ALLOW);
-        HWND b3 = MakeChild(g_popup, L"BUTTON", ex ? L"+15 min" : L"15 min", BS_OWNERDRAW, W - m - 2 * bw - gp, by, bw, bh, IDC_NOTIF_15);
+        int nb = ex ? 3 : 4;      /* Allow | 15 min | Block | Ignore  (the expiry warning has no Block) */
+        HWND b1 = MakeChild(g_popup, L"BUTTON", ex ? L"Always" : L"Allow", BS_OWNERDRAW, W - m - nb * bw - (nb - 1) * gp, by, bw, bh, IDC_NOTIF_ALLOW);
+        HWND b3 = MakeChild(g_popup, L"BUTTON", ex ? L"+15 min" : L"15 min", BS_OWNERDRAW, W - m - (nb - 1) * bw - (nb - 2) * gp, by, bw, bh, IDC_NOTIF_15);
         HWND b2 = MakeChild(g_popup, L"BUTTON", ex ? L"Dismiss" : L"Ignore", BS_OWNERDRAW, W - m - bw, by, bw, bh, IDC_NOTIF_IGNORE);
+        if (!ex) FlatButton(MakeChild(g_popup, L"BUTTON", L"Block", BS_OWNERDRAW, W - m - 2 * bw - gp, by, bw, bh, IDC_NOTIF_BLOCK));
         #undef PS
         FlatButton(b1); FlatButton(b2); FlatButton(b3);
         g_popupStart = g_popupLast = GetTickCount();
@@ -1610,6 +1622,182 @@ static void ShowNextNotice(void)
         SetTimer(g_popup, NOTIF_TIMER, 100, NULL);
         return;
     }
+}
+
+/* ------------------------------------------------------------------ */
+/* Connection log: blocked connection attempts of this session          */
+/* ------------------------------------------------------------------ */
+#define MAX_CONNLOG 500
+#define IDC_LOG_ALLOW 710
+#define IDC_LOG_COPY 711
+#define IDC_LOG_CLEAR 712
+#define IDC_LOG_LIST 713
+typedef struct { SYSTEMTIME st; wchar_t path[MAX_PATH]; wchar_t proto[8]; wchar_t remote[80]; int count; DWORD tick; } ConnEntry;
+static ConnEntry *g_conn; static int g_nconn;   /* allocated on first use (a static array would be stored in the .exe) */      /* oldest first; the window shows newest first */
+static HWND g_logWnd, g_logList;
+
+static void LogConnection(const Notice *n)
+{
+    DWORD now = GetTickCount();
+    if (!g_conn) { g_conn = (ConnEntry *)calloc(MAX_CONNLOG, sizeof(ConnEntry)); if (!g_conn) return; }
+    for (int i = g_nconn - 1; i >= 0 && i >= g_nconn - 40; i--) {      /* the same attempt repeated within 30 s becomes one line with a count */
+        ConnEntry *e = &g_conn[i];
+        if (now - e->tick < 30000 && SameFileName(e->path, n->path) && wcscmp(e->proto, n->proto) == 0 && wcscmp(e->remote, n->remote) == 0) {
+            e->count++; e->tick = now; GetLocalTime(&e->st);
+            goto refresh;
+        }
+    }
+    if (g_nconn == MAX_CONNLOG) { memmove(&g_conn[0], &g_conn[1], sizeof(ConnEntry) * (MAX_CONNLOG - 1)); g_nconn--; }
+    {
+        ConnEntry *e = &g_conn[g_nconn++];
+        ZeroMemory(e, sizeof *e);
+        GetLocalTime(&e->st);
+        wcsncpy(e->path, n->path, MAX_PATH - 1); wcsncpy(e->proto, n->proto, 7); wcsncpy(e->remote, n->remote, 79);
+        e->count = 1; e->tick = now;
+    }
+refresh:
+    if (g_logList) { ListView_SetItemCountEx(g_logList, g_nconn, LVSICF_NOINVALIDATEALL | LVSICF_NOSCROLL); InvalidateRect(g_logList, NULL, FALSE); }
+}
+
+static void ConnLine(const ConnEntry *e, wchar_t *out, size_t cap)
+{
+    swprintf(out, cap, L"%02d:%02d:%02d\t%ls\t%ls\t%ls\tx%d\t%ls", e->st.wHour, e->st.wMinute, e->st.wSecond, BaseName(e->path), e->proto, e->remote, e->count, e->path);
+}
+
+static void CopyToClipboard(HWND owner, const wchar_t *text)
+{
+    size_t bytes = (wcslen(text) + 1) * sizeof(wchar_t); HGLOBAL g;
+    if (!OpenClipboard(owner)) return;
+    EmptyClipboard();
+    g = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (g) {
+        void *p = GlobalLock(g);
+        if (p) { memcpy(p, text, bytes); GlobalUnlock(g); if (!SetClipboardData(CF_UNICODETEXT, g)) GlobalFree(g); } else GlobalFree(g);
+    }
+    CloseClipboard();
+}
+
+static void LogLayout(HWND h)
+{
+    RECT rc; UINT dpi = GetDpiForWindow(h); int pad, bw, bh, bar, W, H, x;
+    #define LS(v) MulDiv((v), (int)dpi, 96)
+    GetClientRect(h, &rc); W = rc.right; H = rc.bottom;
+    pad = LS(10); bw = LS(120); bh = LS(34); bar = bh + 2 * pad;
+    if (g_logList) MoveWindow(g_logList, 0, 0, W, H - bar, TRUE);
+    x = W - pad - bw;
+    MoveWindow(GetDlgItem(h, IDC_LOG_CLEAR), x, H - bar + pad, bw, bh, TRUE); x -= bw + pad;
+    MoveWindow(GetDlgItem(h, IDC_LOG_COPY), x, H - bar + pad, bw, bh, TRUE); x -= bw + pad;
+    MoveWindow(GetDlgItem(h, IDC_LOG_ALLOW), x, H - bar + pad, bw, bh, TRUE);
+    #undef LS
+}
+
+static LRESULT CALLBACK LogProc(HWND h, UINT m, WPARAM w, LPARAM l)
+{
+    switch (m) {
+    case WM_SIZE: LogLayout(h); return 0;
+    case WM_GETMINMAXINFO:
+        ((MINMAXINFO *)l)->ptMinTrackSize.x = MulDiv(640, (int)GetDpiForWindow(h), 96);
+        ((MINMAXINFO *)l)->ptMinTrackSize.y = MulDiv(300, (int)GetDpiForWindow(h), 96);
+        return 0;
+    case WM_ERASEBKGND: { RECT rc; HBRUSH b = CreateSolidBrush(cBg); GetClientRect(h, &rc); FillRect((HDC)w, &rc, b); DeleteObject(b); return 1; }
+    case WM_DRAWITEM:
+        if (((DRAWITEMSTRUCT *)l)->CtlType == ODT_BUTTON) { DrawFlatButton((DRAWITEMSTRUCT *)l); return TRUE; }
+        break;
+    case WM_NOTIFY: {
+        NMHDR *nh = (NMHDR *)l;
+        if (nh->hwndFrom == g_logList && nh->code == LVN_GETDISPINFOW) {
+            NMLVDISPINFOW *d = (NMLVDISPINFOW *)nh; static wchar_t buf[8][64]; static int k;
+            int ai = g_nconn - 1 - d->item.iItem;
+            if (ai >= 0 && ai < g_nconn && (d->item.mask & LVIF_TEXT)) {
+                const ConnEntry *e = &g_conn[ai]; wchar_t *o = buf[k++ & 7];
+                switch (d->item.iSubItem) {
+                case 0: swprintf(o, 64, L"%02d:%02d:%02d", e->st.wHour, e->st.wMinute, e->st.wSecond); d->item.pszText = o; break;
+                case 1: d->item.pszText = (LPWSTR)BaseName(e->path); break;
+                case 2: d->item.pszText = (LPWSTR)e->proto; break;
+                case 3: d->item.pszText = (LPWSTR)e->remote; break;
+                case 4: swprintf(o, 64, L"%d", e->count); d->item.pszText = o; break;
+                default: d->item.pszText = (LPWSTR)e->path; break;
+                }
+            }
+            return 0;
+        }
+        break;
+    }
+    case WM_COMMAND:
+        switch (LOWORD(w)) {
+        case IDC_LOG_ALLOW: {
+            int sel = ListView_GetNextItem(g_logList, -1, LVNI_SELECTED), ai = g_nconn - 1 - sel;
+            if (sel < 0 || ai < 0 || ai >= g_nconn) {
+                ShowDialog(h, L"Connection log", L"Select a line first, then click Allow App.", L"OK", NULL, NULL);
+            } else if (FindRule(g_conn[ai].path)) {
+                ShowDialog(h, L"Connection log", L"This app is already on the allow list.", L"OK", NULL, NULL);
+            } else {
+                wchar_t path[MAX_PATH]; wcscpy(path, g_conn[ai].path);
+                if (AllowPath(path)) { RefreshApps(); SetWindowTextW(h, L"Connection log - allowed (applies to new connections)"); }
+            }
+            return 0;
+        }
+        case IDC_LOG_COPY: {
+            int sel = ListView_GetNextItem(g_logList, -1, LVNI_SELECTED), ai = g_nconn - 1 - sel;
+            wchar_t line[MAX_PATH + 200];
+            if (sel >= 0 && ai >= 0 && ai < g_nconn) { ConnLine(&g_conn[ai], line, MAX_PATH + 200); CopyToClipboard(h, line); }
+            else if (g_nconn > 0) {                                   /* nothing selected: copy everything, newest first */
+                size_t cap = (size_t)g_nconn * (MAX_PATH + 220) + 16; wchar_t *all = (wchar_t *)malloc(cap * sizeof(wchar_t)), *q = all;
+                if (!all) return 0;
+                *q = 0;
+                for (int i = g_nconn - 1; i >= 0; i--) { ConnLine(&g_conn[i], line, MAX_PATH + 200); q += swprintf(q, cap - (size_t)(q - all), L"%ls\r\n", line); }
+                CopyToClipboard(h, all); free(all);
+            }
+            return 0;
+        }
+        case IDC_LOG_CLEAR:
+            g_nconn = 0;
+            ListView_SetItemCountEx(g_logList, 0, 0); InvalidateRect(g_logList, NULL, TRUE);
+            SetWindowTextW(h, L"Connection log - blocked connections this session");
+            return 0;
+        }
+        break;
+    case WM_CLOSE: DestroyWindow(h); return 0;
+    case WM_DESTROY: g_logWnd = NULL; g_logList = NULL; return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+
+static void ShowConnLog(void)
+{
+    static BOOL registered; UINT dpi = g_hwnd ? GetDpiForWindow(g_hwnd) : GetDpiForSystem(); RECT wr = {0, 0, 0, 0}; BOOL dark = g_dark; LVCOLUMNW col;
+    #define LS(v) MulDiv((v), (int)dpi, 96)
+    static const wchar_t *names[6] = { L"Last seen", L"Application", L"Protocol", L"Remote address", L"Count", L"Path" };
+    static const int widths[6] = { 80, 180, 80, 230, 60, 520 };
+    if (g_logWnd) { if (IsIconic(g_logWnd)) ShowWindow(g_logWnd, SW_RESTORE); SetForegroundWindow(g_logWnd); return; }
+    if (!registered) {
+        WNDCLASSW wc; ZeroMemory(&wc, sizeof wc);
+        wc.lpfnWndProc = LogProc; wc.hInstance = g_inst; wc.hCursor = LoadCursor(NULL, IDC_ARROW); wc.lpszClassName = L"SHSFWLog";
+        wc.hIcon = g_iconBig; RegisterClassW(&wc); registered = TRUE;
+    }
+    if (g_hwnd) GetWindowRect(g_hwnd, &wr);
+    g_logWnd = CreateWindowExW(0, L"SHSFWLog", L"Connection log - blocked connections this session", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+                               wr.left + LS(40), wr.top + LS(60), LS(960), LS(520), NULL, NULL, g_inst, NULL);
+    if (!g_logWnd) return;
+    if (g_iconSmall) SendMessageW(g_logWnd, WM_SETICON, ICON_SMALL, (LPARAM)g_iconSmall);
+    if (g_iconBig) SendMessageW(g_logWnd, WM_SETICON, ICON_BIG, (LPARAM)g_iconBig);
+    DwmSetWindowAttribute(g_logWnd, 20, &dark, sizeof dark);
+    g_logList = CreateWindowExW(0, WC_LISTVIEWW, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_OWNERDATA,
+                                0, 0, 10, 10, g_logWnd, (HMENU)(INT_PTR)IDC_LOG_LIST, g_inst, NULL);
+    SendMessageW(g_logList, WM_SETFONT, (WPARAM)g_font, TRUE);
+    ListView_SetExtendedListViewStyle(g_logList, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP);
+    ThemeCtl(g_logList);
+    ListView_SetBkColor(g_logList, cBg); ListView_SetTextBkColor(g_logList, cBg); ListView_SetTextColor(g_logList, cText);
+    ZeroMemory(&col, sizeof col); col.mask = LVCF_TEXT | LVCF_WIDTH;
+    for (int i = 0; i < 6; i++) { col.pszText = (LPWSTR)names[i]; col.cx = LS(widths[i]); ListView_InsertColumn(g_logList, i, &col); }
+    FlatButton(MakeChild(g_logWnd, L"BUTTON", L"Allow App", BS_OWNERDRAW | WS_TABSTOP, 0, 0, 10, 10, IDC_LOG_ALLOW));
+    FlatButton(MakeChild(g_logWnd, L"BUTTON", L"Copy", BS_OWNERDRAW | WS_TABSTOP, 0, 0, 10, 10, IDC_LOG_COPY));
+    FlatButton(MakeChild(g_logWnd, L"BUTTON", L"Clear", BS_OWNERDRAW | WS_TABSTOP, 0, 0, 10, 10, IDC_LOG_CLEAR));
+    ListView_SetItemCountEx(g_logList, g_nconn, 0);
+    LogLayout(g_logWnd);
+    ShowWindow(g_logWnd, SW_SHOW);
+    SetForegroundWindow(g_logWnd);
+    #undef LS
 }
 
 /* Timed rules that are within 30 s of their end get one warning card each (per expiry time). */
@@ -1651,11 +1839,12 @@ static void OnBlocked(Notice *n)
 {
     InterlockedDecrement(&g_pending);
     if (!n) return;
-    if (g_notify && g_filtersOn) {
+    if (g_filtersOn) {
         wchar_t dos[MAX_PATH];
         ToDosPath(n->path, dos, MAX_PATH);
         wcscpy(n->path, dos);
-        if (!FindRule(n->path) && !IsBlocked(n->path) && !IsSuppressed(n->path) && g_nqueue < MAX_NOTICES) {
+        LogConnection(n);
+        if (g_notify && !FindRule(n->path) && !IsBlocked(n->path) && !IsSuppressed(n->path) && g_nqueue < MAX_NOTICES) {
             Log(L"Blocked connection: %ls (%ls)", BaseName(n->path), n->proto);
             SuppressFor(n->path, 10000); /* collapse the burst of retries */
             g_queue[g_nqueue++] = *n;
@@ -1696,6 +1885,12 @@ static void ApplyTheme(void)
     DwmSetWindowAttribute(g_hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof dark);
     ThemeCtl(g_list);
     ListView_SetBkColor(g_list, cBg); ListView_SetTextBkColor(g_list, CLR_NONE); ListView_SetTextColor(g_list, cText);
+    if (g_logWnd) {
+        DwmSetWindowAttribute(g_logWnd, 20, &dark, sizeof dark);
+        ThemeCtl(g_logList);
+        ListView_SetBkColor(g_logList, cBg); ListView_SetTextBkColor(g_logList, cBg); ListView_SetTextColor(g_logList, cText);
+        RedrawWindow(g_logWnd, NULL, NULL, RDW_ERASE | RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_FRAME);
+    }
     RedrawWindow(g_hwnd, NULL, NULL, RDW_ERASE | RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_FRAME | RDW_UPDATENOW);
 }
 
@@ -1895,7 +2090,7 @@ static void AddTray(void)
     ZeroMemory(&g_nid, sizeof g_nid);
     g_nid.cbSize = sizeof g_nid; g_nid.hWnd = g_hwnd; g_nid.uID = 1;
     g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-    g_nid.uCallbackMessage = WM_TRAY; g_nid.hIcon = (g_filtersOn && g_iconSmallOn) ? g_iconSmallOn : g_iconSmall;
+    g_nid.uCallbackMessage = WM_TRAY; g_nid.hIcon = (!g_filtersOn && g_iconSmallOff) ? g_iconSmallOff : g_iconSmall;
     wcscpy(g_nid.szTip, APP_NAME);
     g_trayOk = Shell_NotifyIconW(NIM_ADD, &g_nid);
     if (!g_trayOk && g_hwnd) SetTimer(g_hwnd, TIMER_TRAY, 3000, NULL);   /* at logon the taskbar may not exist yet: keep trying */
@@ -1907,7 +2102,7 @@ static void UpdateTray(void)
 {
     if (!g_nid.hWnd) return;
     swprintf(g_nid.szTip, 128, L"%ls\n%ls - %d allowed", APP_NAME, g_filtersOn ? L"Filters ON" : L"Filters OFF", g_nrules);
-    g_nid.hIcon = (g_filtersOn && g_iconSmallOn) ? g_iconSmallOn : g_iconSmall;     /* green while filters are on */
+    g_nid.hIcon = (!g_filtersOn && g_iconSmallOff) ? g_iconSmallOff : g_iconSmall;     /* blue while filters are on, grey while off */
     Shell_NotifyIconW(NIM_MODIFY, &g_nid);
 }
 
@@ -1933,6 +2128,7 @@ static void QuitApp(void)
     g_quit = TRUE;
     if (g_offExit && g_filtersOn) { StopWatching(); DisableFilters(); g_filtersOn = FALSE; }
     if (g_popup) { DestroyWindow(g_popup); g_popup = NULL; }
+    if (g_logWnd) DestroyWindow(g_logWnd);
     DestroyWindow(g_hwnd);
 }
 
@@ -2338,6 +2534,7 @@ static HMENU BuildOptionsMenu(void)
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING, IDM_REFRESH, L"Refresh list\tF5");
     AppendMenuW(m, MF_STRING, IDM_PURGE, L"Purge invalid entries...");
+    AppendMenuW(m, MF_STRING, IDM_CONNLOG, L"Connection log...");
     AppendMenuW(m, MF_STRING, IDM_FOLDER, L"Open data folder");
     AppendMenuW(m, MF_STRING, IDM_OPENLOG, L"Open debug log");
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
@@ -2489,8 +2686,9 @@ static void ShowRowMenu(int row)
         else swprintf(t, 64, L"Allow for %d hour%ls", g_mins[k] / 60, g_mins[k] == 60 ? L"" : L"s");
         AppendMenuW(m, MF_STRING, IDM_ROW_TIME + k, t);
     }
-    if (it->allowed) { AppendMenuW(m, MF_SEPARATOR, 0, NULL); AppendMenuW(m, MF_STRING, IDM_ROW_BLOCK, L"Block"); }
+    if (it->allowed) { AppendMenuW(m, MF_SEPARATOR, 0, NULL); AppendMenuW(m, MF_STRING, IDM_ROW_BLOCK, L"Block"); AppendMenuW(m, MF_STRING, IDM_ROW_CLEAR, L"Clear rule (No Rule)"); }
     else if (!it->blocked) { AppendMenuW(m, MF_SEPARATOR, 0, NULL); AppendMenuW(m, MF_STRING, IDM_ROW_BLOCK, L"Mark as blocked"); }
+    else { AppendMenuW(m, MF_SEPARATOR, 0, NULL); AppendMenuW(m, MF_STRING, IDM_ROW_CLEAR, L"Clear rule (No Rule)"); }
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING, IDM_REFRESH, L"Refresh list\tF5");
     AppendMenuW(m, MF_STRING, IDM_PURGE, L"Purge invalid entries...");
@@ -2593,9 +2791,9 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l)
             int sm = GetSystemMetricsForDpi(SM_CXSMICON, HIWORD(w));
             HICON ni = (HICON)LoadImageW(g_inst, MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON, sm, sm, LR_DEFAULTCOLOR);
             if (ni) {
-                HICON old = g_iconSmall, oldOn = g_iconSmallOn; g_iconSmall = ni; g_iconSmallOn = TintGreen(ni);
+                HICON old = g_iconSmall, oldOn = g_iconSmallOff; g_iconSmall = ni; g_iconSmallOff = TintGray(ni);
                 SendMessageW(h, WM_SETICON, ICON_SMALL, (LPARAM)ni);
-                g_nid.hIcon = (g_filtersOn && g_iconSmallOn) ? g_iconSmallOn : ni; Shell_NotifyIconW(NIM_MODIFY, &g_nid);
+                g_nid.hIcon = (!g_filtersOn && g_iconSmallOff) ? g_iconSmallOff : ni; Shell_NotifyIconW(NIM_MODIFY, &g_nid);
                 if (old) DestroyIcon(old);
                 if (oldOn) DestroyIcon(oldOn);
             }
@@ -2741,10 +2939,16 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l)
             if (sel >= 0 && sel < g_nview) { wchar_t p[MAX_PATH]; wcscpy(p, g_items[g_view[sel]].path); BlockPath(p); RefreshApps(); }
             break;
         }
+        case IDM_ROW_CLEAR: {
+            int sel = ListView_GetNextItem(g_list, -1, LVNI_SELECTED);
+            if (sel >= 0 && sel < g_nview) { wchar_t p[MAX_PATH]; wcscpy(p, g_items[g_view[sel]].path); ClearRulePath(p); RefreshApps(); }
+            break;
+        }
         case IDM_REFRESH: RefreshApps(); break;
         case IDM_PURGE: PurgeInvalid(); break;
         case IDM_FOLDER: ShellExecuteW(h, L"open", g_dataDir, NULL, NULL, SW_SHOWNORMAL); break;
         case IDM_ABOUT: ShowAbout(); break;
+        case IDM_CONNLOG: ShowConnLog(); break;
         case IDM_OPENLOG:
             if (GetFileAttributesW(g_logFile) == INVALID_FILE_ATTRIBUTES) Log(L"(log opened by user)");
             ShellExecuteW(h, L"open", g_logFile, NULL, NULL, SW_SHOWNORMAL);
@@ -2835,7 +3039,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
     g_taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
     g_iconBig = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_DEFAULTCOLOR);
     g_iconSmall = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR);
-    g_iconSmallOn = TintGreen(g_iconSmall);
+    g_iconSmallOff = TintGray(g_iconSmall);
     LoadSettings();
     LoadDns();
     LoadRules();
