@@ -82,20 +82,38 @@ jobs:
     needs: [version, build-native]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
-          path: assets
+          path: dist
           merge-multiple: true
+      - name: Write release notes from commit messages
+        run: |
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            prev=$(git tag --list 'v*' --sort=-v:refname | grep -v -- '-dev\.' | head -n1 || true)
+          else
+            prev=$(git describe --tags --abbrev=0 2>/dev/null || true)
+          fi
+          range=${prev:+$prev..}HEAD
+          {
+            echo "## What's changed"
+            echo
+            git log --no-merges --reverse --pretty=format:'### %s%n%n%b%n' "$range"
+          } > release-notes.md
+          cat release-notes.md
       - name: Create Tag, Release and Upload Assets
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.version.outputs.version }}
           target_commitish: ${{ github.sha }}
           name: SailHighSea Firewall v${{ needs.version.outputs.version }}
+          body_path: release-notes.md
           generate_release_notes: true
           draft: false
           prerelease: ${{ github.ref_name != 'main' }}
           make_latest: ${{ github.ref_name == 'main' }}
-          files: assets/*
+          files: dist/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
