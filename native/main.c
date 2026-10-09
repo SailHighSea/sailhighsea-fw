@@ -181,6 +181,7 @@ static int g_autoCache = -1;
 static int ExpireRules(void);
 static HMENU BuildOptionsMenu(void);
 static void UpdateTray(void);
+static void UpdateExpiryTimer(void);
 enum { IDM_THEME_DARK = 220, IDM_THEME_LIGHT, IDM_THEME_SYSTEM, IDM_HL_RUN = 230, IDM_HL_ALLOWED, IDM_HL_BLOCKED, IDM_HL_INVALID, IDM_HL_SYSTEM, IDM_HL_TEMP };
 static BOOL g_filtersOn, g_permanent = TRUE, g_dns = TRUE, g_notify = TRUE;
 static volatile UINT64 g_denyId[2];
@@ -1115,7 +1116,16 @@ static void SuppressFor(const wchar_t *path, DWORD ms)
 /* ------------------------------------------------------------------ */
 /* Application list                                                    */
 /* ------------------------------------------------------------------ */
-static int StatusRank(const Item *x) { return x->allowed ? 0 : (x->blocked ? 1 : 2); }
+/* Status order: Allowed, Allowed for a limited time, Blocked, No Rule. */
+static int StatusRank(const Item *x) { return x->allowed ? (x->expires ? 1 : 0) : (x->blocked ? 2 : 3); }
+
+static int StatusCmp(const Item *x, const Item *y)
+{
+    int r = StatusRank(x) - StatusRank(y);
+    if (!r && x->allowed && x->expires && y->expires) r = x->expires < y->expires ? -1 : (x->expires > y->expires ? 1 : 0);   /* soonest to end first */
+    if (!r) r = _wcsicmp(x->name, y->name);
+    return r;
+}
 
 static int ItemCmp(const void *a, const void *b)
 {
@@ -1124,11 +1134,9 @@ static int ItemCmp(const void *a, const void *b)
     switch (g_sortCol) {
     case 0: r = _wcsicmp(x->name, y->name); break;
     case 1: r = _wcsicmp(x->path, y->path); break;
-    case 2: case 3: r = StatusRank(x) - StatusRank(y); if (!r) r = _wcsicmp(x->name, y->name); break;
+    case 2: case 3: r = StatusCmp(x, y); break;
     default:
-        r = StatusRank(x) - StatusRank(y);
-        if (!r) r = _wcsicmp(x->name, y->name);
-        return r;
+        return StatusCmp(x, y);
     }
     return g_sortAsc ? r : -r;
 }
@@ -1222,9 +1230,10 @@ static void RefreshStatus(void)
     InvalidateRect(g_bToggle, NULL, FALSE);
     InvalidateRect(g_bNotify, NULL, FALSE);
     UpdateTray();
+    UpdateExpiryTimer();
 }
 
-static void RefreshApps(void)
+static void RefreshAppsNow(void)
 {
     HANDLE snap;
     PROCESSENTRY32W pe;
@@ -1270,6 +1279,22 @@ static void RefreshApps(void)
     RebuildView();
     RefreshStatus();
 }
+
+/* While the window is hidden (tray) or minimized nobody sees the list, so skip the process scan and the sort;
+   it is rebuilt the moment the window is shown again. The status line and tray tooltip are still kept current. */
+static BOOL g_refreshPending;
+
+static BOOL WindowIdle(void) { return !g_hwnd || !IsWindowVisible(g_hwnd) || IsIconic(g_hwnd); }
+
+static void RefreshApps(void)
+{
+    if (WindowIdle()) { g_refreshPending = TRUE; RefreshStatus(); return; }
+    g_refreshPending = FALSE;
+    RefreshAppsNow();
+}
+
+/* Gives unused memory back to Windows (Task Manager then shows the small working set while the app sits in the tray). */
+static void TrimMemory(void) { SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1); }
 
 /* ------------------------------------------------------------------ */
 /* Allow / block operations                                            */
@@ -1332,6 +1357,15 @@ static BOOL HasTimedRules(void)
 {
     for (int i = 0; i < g_nrules; i++) if (g_rules[i].expires) return TRUE;
     return FALSE;
+}
+
+/* The 2-second expiry timer only runs while at least one timed rule exists, so an idle app never wakes up. */
+static BOOL g_expTimerOn; static int g_expTick;
+static void UpdateExpiryTimer(void)
+{
+    BOOL need = g_hwnd && HasTimedRules();
+    if (need && !g_expTimerOn) { SetTimer(g_hwnd, TIMER_EXPIRE, 2000, NULL); g_expTimerOn = TRUE; }
+    else if (!need && g_expTimerOn) { KillTimer(g_hwnd, TIMER_EXPIRE); g_expTimerOn = FALSE; }
 }
 
 /* Back to "No Rule": removes the allow rule and/or the blocked entry for this program. */
@@ -2719,7 +2753,9 @@ static LRESULT OnNotify(NMHDR *nh)
     }
     case LVN_COLUMNCLICK: {
         int c = ((NMLISTVIEW *)nh)->iSubItem;
-        if (g_sortCol == c) g_sortAsc = !g_sortAsc; else { g_sortCol = c; g_sortAsc = TRUE; }
+        /* click cycle: ascending -> descending -> no sort (back to the default order) */
+        if (g_sortCol == c) { if (g_sortAsc) g_sortAsc = FALSE; else { g_sortCol = -1; g_sortAsc = TRUE; } }
+        else { g_sortCol = c; g_sortAsc = TRUE; }
         qsort(g_items, (size_t)g_nitems, sizeof(Item), ItemCmp);
         RebuildView();
         InvalidateRect(ListView_GetHeader(g_list), NULL, TRUE);
@@ -2812,8 +2848,14 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l)
     }
     case WM_SIZE:
         if (w == SIZE_MINIMIZED && g_minTray) { ShowWindow(h, SW_HIDE); return 0; }
+        if (w == SIZE_MINIMIZED) { TrimMemory(); return 0; }
         Layout();
+        if (g_refreshPending) { g_refreshPending = FALSE; RefreshAppsNow(); }
         return 0;
+    case WM_SHOWWINDOW:
+        if (w) { if (g_refreshPending) { g_refreshPending = FALSE; RefreshAppsNow(); } }
+        else TrimMemory();
+        break;
     case WM_GETMINMAXINFO:
         ((MINMAXINFO *)l)->ptMinTrackSize.x = MulDiv(1000, (int)GetDpiForWindow(h), 96);
         ((MINMAXINFO *)l)->ptMinTrackSize.y = MulDiv(360, (int)GetDpiForWindow(h), 96);
@@ -2973,8 +3015,9 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l)
         }
         if (w == TIMER_EXPIRE) {
             if (ExpireRules()) { RefreshApps(); }
-            else if (HasTimedRules()) InvalidateRect(g_list, NULL, FALSE);   /* refresh "12m left" labels */
+            else if (!WindowIdle() && ++g_expTick % 5 == 0) InvalidateRect(g_list, NULL, FALSE);   /* "12m left" labels change once a minute */
             CheckExpiryWarnings();
+            UpdateExpiryTimer();
         }
         return 0;
     case WM_SETTINGCHANGE:
@@ -3096,7 +3139,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
     if (g_iconBig) SendMessageW(g_hwnd, WM_SETICON, ICON_BIG, (LPARAM)g_iconBig);
     if (g_iconSmall) SendMessageW(g_hwnd, WM_SETICON, ICON_SMALL, (LPARAM)g_iconSmall);
     AddTray();
-    SetTimer(g_hwnd, TIMER_EXPIRE, 2000, NULL);
+    UpdateExpiryTimer();
     if (g_onTop) ApplyOnTop();
     if (g_startMin || (cmd && wcsstr(cmd, L"--minimized"))) ShowWindow(g_hwnd, SW_HIDE); else { ShowWindow(g_hwnd, g_wantMax ? SW_SHOWMAXIMIZED : show); g_wantMax = FALSE; }
     UpdateWindow(g_hwnd);
