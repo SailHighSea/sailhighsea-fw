@@ -167,7 +167,7 @@ typedef wchar_t PathStr[MAX_PATH];
 static PathStr *g_blockedList; static int g_nblocked, g_capblocked;
 static wchar_t g_blockedFile[MAX_PATH];
 static int g_sortCol = -1; static BOOL g_sortAsc = TRUE;
-static wchar_t g_statusText[260]; static int g_sepX;
+static wchar_t g_statusText[260]; static int g_sepX, g_sepY0, g_sepY1;
 static BOOL g_startMin, g_closeTray = TRUE, g_minTray, g_onTop, g_hideWin = TRUE, g_onlyRun, g_offExit, g_quit;
 static HICON g_iconBig, g_iconSmall;
 static HIMAGELIST g_sysIL;
@@ -498,11 +498,13 @@ static void InitPaths(void)
 /* ------------------------------------------------------------------ */
 typedef struct { wchar_t name[48], a[64], b[64]; } DnsPreset;
 static const DnsPreset g_dnsBuiltin[] = {
+    { L"AdGuard (Default)", L"94.140.14.14", L"94.140.15.15" },
+    { L"AdGuard (Non-filtering)", L"94.140.14.140", L"94.140.14.141" },
+    { L"AdGuard (Family protection)", L"94.140.14.15", L"94.140.15.16" },
     { L"Cloudflare", L"1.1.1.1", L"1.0.0.1" },
     { L"Google", L"8.8.8.8", L"8.8.4.4" },
     { L"Quad9", L"9.9.9.9", L"149.112.112.112" },
     { L"OpenDNS", L"208.67.222.222", L"208.67.220.220" },
-    { L"AdGuard", L"94.140.14.14", L"94.140.15.15" },
 };
 #define N_DNS_BUILTIN ((int)(sizeof g_dnsBuiltin / sizeof g_dnsBuiltin[0]))
 #define MAX_DNS_CUSTOM 16
@@ -524,6 +526,7 @@ static void SaveDns(void)
     WritePrivateProfileStringW(L"dns", NULL, NULL, g_iniFile);          /* rewrite the whole section */
     swprintf(v, 16, L"%d", g_dnsSel); WritePrivateProfileStringW(L"dns", L"sel", v, g_iniFile);
     swprintf(v, 16, L"%d", g_dnsLast); WritePrivateProfileStringW(L"dns", L"last", v, g_iniFile);
+    swprintf(v, 16, L"%d", N_DNS_BUILTIN); WritePrivateProfileStringW(L"dns", L"nb", v, g_iniFile);
     swprintf(v, 16, L"%d", g_nDnsCustom); WritePrivateProfileStringW(L"dns", L"n", v, g_iniFile);
     for (int i = 0; i < g_nDnsCustom; i++) {
         swprintf(k, 24, L"name%d", i); WritePrivateProfileStringW(L"dns", k, g_dnsCustom[i].name, g_iniFile);
@@ -546,8 +549,16 @@ static void LoadDns(void)
         if (p->name[0] && p->a[0]) g_nDnsCustom++;
     }
     g_dnsSel = (int)GetPrivateProfileIntW(L"dns", L"sel", DNS_UNKNOWN, g_iniFile);
-    if (g_dnsSel >= N_DNS_BUILTIN + g_nDnsCustom || g_dnsSel < DNS_UNKNOWN) g_dnsSel = DNS_UNKNOWN;
     g_dnsLast = (int)GetPrivateProfileIntW(L"dns", L"last", -1, g_iniFile);
+    if (GetPrivateProfileIntW(L"dns", L"nb", 5, g_iniFile) == 5) {      /* older list: 5 presets, AdGuard last */
+        static const int remap[5] = { 3, 4, 5, 6, 0 };
+        int *s[2] = { &g_dnsSel, &g_dnsLast };
+        for (int j = 0; j < 2; j++) {
+            if (*s[j] >= 0 && *s[j] < 5) *s[j] = remap[*s[j]];
+            else if (*s[j] >= 5) *s[j] += N_DNS_BUILTIN - 5;
+        }
+    }
+    if (g_dnsSel >= N_DNS_BUILTIN + g_nDnsCustom || g_dnsSel < DNS_UNKNOWN) g_dnsSel = DNS_UNKNOWN;
     if (g_dnsLast >= N_DNS_BUILTIN + g_nDnsCustom || g_dnsLast < -1) g_dnsLast = -1;
 }
 
@@ -1610,7 +1621,7 @@ static void Layout(void)
     MoveWindow(g_bNotify, x, y, wN, bh, TRUE); x += wN + gap;
     MoveWindow(g_bDns, x, y, wD, bh, TRUE); x += wD + gap;
     MoveWindow(g_bOptions, x, y, wO, bh, TRUE); x += wO + gap;
-    g_sepX = x - S(4);
+    g_sepX = x - gap / 2; g_sepY0 = y + S(6); g_sepY1 = y + bh - S(6);
     int sw = W - x - pad; if (sw < S(120)) sw = S(120);
     {
         TEXTMETRICW tm; HDC dc = GetDC(g_hwnd); HGDIOBJ of = SelectObject(dc, g_font);
@@ -2528,7 +2539,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l)
         if (g_searchBox.right > 0) FillRounded((HDC)w, &g_searchBox, MulDiv(8, (int)GetDpiForWindow(h), 96), cPanel);
         if (g_sepX > 0) {
             HPEN pen = CreatePen(PS_SOLID, 1, COL_LINE); HGDIOBJ op = SelectObject((HDC)w, pen);
-            MoveToEx((HDC)w, g_sepX, 12, NULL); LineTo((HDC)w, g_sepX, 46);
+            MoveToEx((HDC)w, g_sepX, g_sepY0, NULL); LineTo((HDC)w, g_sepX, g_sepY1);
             SelectObject((HDC)w, op); DeleteObject(pen);
         }
         return 1;
