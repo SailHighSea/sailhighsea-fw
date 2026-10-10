@@ -89,7 +89,7 @@ static const int g_mins[] = {15, 30, 60, 120, 240, 480};
 #define WM_SHOWME (WM_APP + 4)
 #define WM_APP_DNS (WM_APP + 5)
 enum { IDM_DNS_PRESET = 2000, IDM_DNS_REM = 2100, IDM_DNS_AUTO = 2200, IDM_DNS_ADD = 2201 };
-enum { IDM_AUTOSTART = 210, IDM_STARTMIN, IDM_CLOSETRAY, IDM_MINTRAY, IDM_ONTOP, IDM_HIDEWIN, IDM_ONLYRUN, IDM_OFFEXIT,
+enum { IDM_AUTOSTART = 210, IDM_STARTMIN, IDM_CLOSETRAY, IDM_MINTRAY, IDM_ONTOP, IDM_HIDEWIN, IDM_ONLYRUN, IDM_OFFEXIT, IDM_GROUP,
        IDT_SHOW = 401, IDT_FILTERS, IDT_NOTIFY, IDT_EXIT };
 #define WM_APP_BLOCK (WM_APP + 1)
 #define WM_APP_RESULT (WM_APP + 2)
@@ -167,7 +167,8 @@ static void LogInit(LPCWSTR cmd)
 
 static Rule *g_rules; static int g_nrules, g_caprules;
 static Item *g_items; static int g_nitems, g_capitems;
-static int *g_view; static int g_nview;
+static int *g_view; static int g_nview;          /* row -> g_items index; a negative value is a group header row (-1 - rank) */
+static BOOL g_group = TRUE; static unsigned g_collapsed; static int g_gcount[4]; static DWORD g_groupClickTick;
 typedef wchar_t PathStr[MAX_PATH];
 static PathStr *g_blockedList; static int g_nblocked, g_capblocked;
 static wchar_t g_blockedFile[MAX_PATH];
@@ -610,6 +611,7 @@ static void LoadSettings(void)
     g_minTray = GetPrivateProfileIntW(L"s", L"mintray", 0, g_iniFile) != 0;
     g_onTop = GetPrivateProfileIntW(L"s", L"ontop", 0, g_iniFile) != 0;
     g_hideWin = GetPrivateProfileIntW(L"s", L"hidewin", 1, g_iniFile) != 0;
+    g_group = GetPrivateProfileIntW(L"s", L"group", 1, g_iniFile) != 0;
     g_onlyRun = GetPrivateProfileIntW(L"s", L"onlyrun", 0, g_iniFile) != 0;
     g_offExit = GetPrivateProfileIntW(L"s", L"offexit", 0, g_iniFile) != 0;
     g_theme = (int)GetPrivateProfileIntW(L"s", L"theme", 2, g_iniFile);      /* default: follow Windows */
@@ -628,6 +630,7 @@ static void SaveSettings(void)
     WritePrivateProfileStringW(L"s", L"mintray", g_minTray ? L"1" : L"0", g_iniFile);
     WritePrivateProfileStringW(L"s", L"ontop", g_onTop ? L"1" : L"0", g_iniFile);
     WritePrivateProfileStringW(L"s", L"hidewin", g_hideWin ? L"1" : L"0", g_iniFile);
+    WritePrivateProfileStringW(L"s", L"group", g_group ? L"1" : L"0", g_iniFile);
     WritePrivateProfileStringW(L"s", L"onlyrun", g_onlyRun ? L"1" : L"0", g_iniFile);
     WritePrivateProfileStringW(L"s", L"offexit", g_offExit ? L"1" : L"0", g_iniFile);
     { wchar_t n[16]; swprintf(n, 16, L"%d", g_theme); WritePrivateProfileStringW(L"s", L"theme", n, g_iniFile);
@@ -1163,20 +1166,38 @@ static Item *FindItem(const wchar_t *path)
     return NULL;
 }
 
+static Item *ViewItem(int row) { return (row >= 0 && row < g_nview && g_view[row] >= 0) ? &g_items[g_view[row]] : NULL; }
+
+static BOOL InView(const Item *it, const wchar_t *q, size_t wl)
+{
+    BOOL decided = it->allowed || it->blocked;
+    if (g_hideWin && !decided && wl && _wcsnicmp(it->path, g_winDir, wl) == 0) return FALSE;
+    if (g_onlyRun && !it->running) return FALSE;
+    return !q[0] || ContainsNoCase(it->name, q) || ContainsNoCase(it->path, q);
+}
+
 static void RebuildView(void)
 {
-    wchar_t q[128];
+    wchar_t q[128]; size_t wl = wcslen(g_winDir);
     GetWindowTextW(g_search, q, 128);
     free(g_view);
-    g_view = (int *)malloc((size_t)(g_nitems + 1) * sizeof(int));
+    g_view = (int *)malloc((size_t)(g_nitems + 5) * sizeof(int));
     g_nview = 0;
-    size_t wl = wcslen(g_winDir);
-    for (int i = 0; i < g_nitems && g_view; i++) {
-        const Item *it = &g_items[i];
-        BOOL decided = it->allowed || it->blocked;
-        if (g_hideWin && !decided && wl && _wcsnicmp(it->path, g_winDir, wl) == 0) continue;
-        if (g_onlyRun && !it->running) continue;
-        if (!q[0] || ContainsNoCase(it->name, q) || ContainsNoCase(it->path, q)) g_view[g_nview++] = i;
+    ZeroMemory(g_gcount, sizeof g_gcount);
+    if (g_view && !g_group) {
+        for (int i = 0; i < g_nitems; i++) if (InView(&g_items[i], q, wl)) g_view[g_nview++] = i;
+    } else if (g_view) {
+        BOOL rev = (g_sortCol == 2 || g_sortCol == 3) && !g_sortAsc;      /* Status sorted descending: groups in reverse order too */
+        for (int k = 0; k < 4; k++) {
+            int r = rev ? 3 - k : k, hpos = g_nview++, n = 0;
+            for (int i = 0; i < g_nitems; i++) {
+                if (StatusRank(&g_items[i]) != r || !InView(&g_items[i], q, wl)) continue;
+                n++;
+                if (!(g_collapsed & (1u << r))) g_view[g_nview++] = i;
+            }
+            if (!n) { g_nview = hpos; continue; }                          /* empty groups are not shown */
+            g_view[hpos] = -1 - r; g_gcount[r] = n;
+        }
     }
     ListView_SetItemCountEx(g_list, g_nview, LVSICF_NOINVALIDATEALL | LVSICF_NOSCROLL);
     InvalidateRect(g_list, NULL, TRUE);
@@ -1185,7 +1206,8 @@ static void RebuildView(void)
 static void UpdateAllowButton(void)
 {
     int sel = ListView_GetNextItem(g_list, -1, LVNI_SELECTED);
-    BOOL allowed = sel >= 0 && sel < g_nview && g_items[g_view[sel]].allowed;
+    const Item *si = ViewItem(sel);
+    BOOL allowed = si && si->allowed;
     SetWindowTextW(g_bAllow, allowed ? L"\U0001F6AB Block App" : L"\u2714 Allow App");
 }
 
@@ -1417,9 +1439,9 @@ static void PurgeInvalid(void)
 static void ToggleSelected(void)
 {
     int sel = ListView_GetNextItem(g_list, -1, LVNI_SELECTED);
-    if (sel < 0 || sel >= g_nview) return;
     wchar_t path[MAX_PATH];
-    Item *it = &g_items[g_view[sel]];
+    Item *it = ViewItem(sel);
+    if (!it) return;
     wcscpy(path, it->path);
     if (it->allowed) BlockPath(path); else AllowPath(path);
     RefreshApps();
@@ -2941,6 +2963,7 @@ static HMENU BuildOptionsMenu(void)
     AppendMenuW(m, MF_STRING | (g_offExit ? MF_CHECKED : 0), IDM_OFFEXIT, L"Disable filters when exiting");
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING | (g_hideWin ? MF_CHECKED : 0), IDM_HIDEWIN, L"Hide Windows system apps in list");
+    AppendMenuW(m, MF_STRING | (g_group ? MF_CHECKED : 0), IDM_GROUP, L"Group list by status");
     AppendMenuW(m, MF_STRING | (g_onlyRun ? MF_CHECKED : 0), IDM_ONLYRUN, L"Show only running apps");
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING, IDM_REFRESH, L"Refresh list\tF5");
@@ -3032,6 +3055,28 @@ static COLORREF Blend(COLORREF a, COLORREF b, int pct)
                GetBValue(a) + (GetBValue(b) - GetBValue(a)) * pct / 100);
 }
 
+static const wchar_t *GroupName(int r)
+{
+    static const wchar_t *n[4] = { L"Allowed", L"Allowed with time", L"Blocked", L"No Rule" };
+    return n[r & 3];
+}
+
+static void DrawGroupRow(const DRAWITEMSTRUCT *di, int rank)
+{
+    HDC dc = di->hDC; RECT row = di->rcItem, tr; wchar_t t[96]; HBRUSH b; HGDIOBJ of; UINT dpi = GetDpiForWindow(g_list);
+    COLORREF col = rank == 0 ? cGreen : rank == 1 ? cAmber : rank == 2 ? cRed : cDim, bg = cPanel;
+    BOOL open = !(g_collapsed & (1u << rank));
+    if ((int)di->itemID == g_hotRow) bg = Blend(bg, g_dark ? RGB(255, 255, 255) : RGB(0, 0, 0), 8);
+    b = CreateSolidBrush(bg); FillRect(dc, &row, b); DeleteObject(b);
+    b = CreateSolidBrush(cLine); tr = row; tr.top = tr.bottom - 1; FillRect(dc, &tr, b); DeleteObject(b);
+    swprintf(t, 96, L"%ls  %ls   (%d)", open ? L"\u25BE" : L"\u25B8", GroupName(rank), g_gcount[rank & 3]);
+    of = SelectObject(dc, g_fontBold ? g_fontBold : g_font);
+    SetBkMode(dc, TRANSPARENT); SetTextColor(dc, col);
+    tr = row; tr.left += MulDiv(10, (int)dpi, 96);
+    DrawTextW(dc, t, -1, &tr, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS | DT_NOPREFIX);
+    SelectObject(dc, of);
+}
+
 static void DrawListRow(const DRAWITEMSTRUCT *di)
 {
     HDC dc = di->hDC; int i = (int)di->itemID; RECT row = di->rcItem; COLORREF bg = cBg, hc;
@@ -3040,6 +3085,7 @@ static void DrawListRow(const DRAWITEMSTRUCT *di)
     HGDIOBJ of;
     UINT dpi = GetDpiForWindow(g_list);
     if (i < 0 || i >= g_nview) return;
+    if (g_view[i] < 0) { DrawGroupRow(di, -1 - g_view[i]); return; }
     Item *it = &g_items[g_view[i]];
     if (sel) bg = g_dark ? RGB(48, 68, 108) : RGB(186, 208, 245);
     else if (RowColor(it, &hc)) bg = hc;
@@ -3080,7 +3126,7 @@ static void AllowSelectedFor(int minutes)
 {
     int sel = ListView_GetNextItem(g_list, -1, LVNI_SELECTED);
     wchar_t path[MAX_PATH];
-    if (sel < 0 || sel >= g_nview) return;
+    if (!ViewItem(sel)) return;
     wcscpy(path, g_items[g_view[sel]].path);
     if (AllowPathFor(path, minutes)) RefreshApps();
 }
@@ -3109,13 +3155,25 @@ static void ShowRowMenu(int row)
     DestroyMenu(m);
 }
 
+static void ToggleGroup(int row)
+{
+    g_collapsed ^= 1u << (-1 - g_view[row]);
+    g_groupClickTick = GetTickCount();
+    ListView_SetItemState(g_list, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
+    RebuildView();
+    UpdateAllowButton();
+}
+
 static LRESULT OnNotify(NMHDR *nh)
 {
     if (nh->hwndFrom != g_list) return 0;
     switch (nh->code) {
     case LVN_GETDISPINFOW: {
         NMLVDISPINFOW *d = (NMLVDISPINFOW *)nh;
-        if (d->item.iItem >= 0 && d->item.iItem < g_nview) {
+        if (d->item.iItem >= 0 && d->item.iItem < g_nview && g_view[d->item.iItem] < 0) {
+            if (d->item.mask & LVIF_TEXT) d->item.pszText = (LPWSTR)L"";
+            if (d->item.mask & LVIF_IMAGE) d->item.iImage = -1;
+        } else if (d->item.iItem >= 0 && d->item.iItem < g_nview) {
             Item *it = &g_items[g_view[d->item.iItem]];
             if ((d->item.mask & LVIF_IMAGE) && d->item.iSubItem == 0) d->item.iImage = IconFor(it);
             if (d->item.mask & LVIF_TEXT) {
@@ -3145,24 +3203,33 @@ static LRESULT OnNotify(NMHDR *nh)
     case NM_RCLICK: {
         NMITEMACTIVATE *ia = (NMITEMACTIVATE *)nh; LVHITTESTINFO ht; int i = ia->iItem;
         if (i < 0) { ZeroMemory(&ht, sizeof ht); ht.pt = ia->ptAction; i = ListView_HitTest(g_list, &ht); }
-        if (i >= 0 && i < g_nview) {
+        if (ViewItem(i)) {
             ListView_SetItemState(g_list, i, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
             ShowRowMenu(i);
         }
         return 0;
     }
+    case NM_CLICK: {
+        NMITEMACTIVATE *ia = (NMITEMACTIVATE *)nh; int i = ia->iItem;
+        if (i >= 0 && i < g_nview && g_view[i] < 0) { ToggleGroup(i); }       /* click a group header to collapse / expand it */
+        return 0;
+    }
     case NM_DBLCLK:
+        if (GetTickCount() - g_groupClickTick < GetDoubleClickTime() + 100) return 0;   /* second click of a double-click on a header must not toggle an app */
         ToggleSelected();
         return 0;
-    case LVN_KEYDOWN:
-        if (((NMLVKEYDOWN *)nh)->wVKey == VK_SPACE) ToggleSelected();
+    case LVN_KEYDOWN: {
+        WORD vk = ((NMLVKEYDOWN *)nh)->wVKey; int sel = ListView_GetNextItem(g_list, -1, LVNI_FOCUSED);
+        if ((vk == VK_SPACE || vk == VK_RETURN) && sel >= 0 && sel < g_nview && g_view[sel] < 0) ToggleGroup(sel);
+        else if (vk == VK_SPACE) ToggleSelected();
         return 0;
+    }
     case NM_CUSTOMDRAW: {
         NMLVCUSTOMDRAW *cd = (NMLVCUSTOMDRAW *)nh;
         if (cd->nmcd.dwDrawStage == CDDS_PREPAINT) return CDRF_NOTIFYITEMDRAW;
         if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
             int i = (int)cd->nmcd.dwItemSpec; COLORREF rc;
-            if (i >= 0 && i < g_nview && !(cd->nmcd.uItemState & CDIS_SELECTED) && RowColor(&g_items[g_view[i]], &rc)) {
+            if (ViewItem(i) && !(cd->nmcd.uItemState & CDIS_SELECTED) && RowColor(&g_items[g_view[i]], &rc)) {
                 HBRUSH hb = CreateSolidBrush(rc);
                 FillRect(cd->nmcd.hdc, &cd->nmcd.rc, hb);   /* paint the whole row ourselves */
                 DeleteObject(hb);
@@ -3173,7 +3240,7 @@ static LRESULT OnNotify(NMHDR *nh)
             int i = (int)cd->nmcd.dwItemSpec;
             cd->clrTextBk = CLR_NONE;
             cd->clrText = COL_TEXT;
-            if (i >= 0 && i < g_nview) {
+            if (ViewItem(i)) {
                 const Item *it = &g_items[g_view[i]];
                 COLORREF rc;
                 if (!(cd->nmcd.uItemState & CDIS_SELECTED) && RowColor(it, &rc)) cd->clrTextBk = CLR_NONE; /* row already painted */
@@ -3332,6 +3399,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l)
         case IDM_ONTOP: g_onTop = !g_onTop; SaveSettings(); ApplyOnTop(); break;
         case IDM_OFFEXIT: g_offExit = !g_offExit; SaveSettings(); break;
         case IDM_HIDEWIN: g_hideWin = !g_hideWin; SaveSettings(); RebuildView(); break;
+        case IDM_GROUP: g_group = !g_group; SaveSettings(); RebuildView(); break;
         case IDM_ONLYRUN: g_onlyRun = !g_onlyRun; SaveSettings(); RebuildView(); break;
         case IDT_SHOW:
             if (IsWindowVisible(h)) ShowWindow(h, SW_HIDE); else ShowMain();
@@ -3356,12 +3424,12 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l)
         case IDM_ROW_ALLOW: AllowSelectedFor(0); break;
         case IDM_ROW_BLOCK: {
             int sel = ListView_GetNextItem(g_list, -1, LVNI_SELECTED);
-            if (sel >= 0 && sel < g_nview) { wchar_t p[MAX_PATH]; wcscpy(p, g_items[g_view[sel]].path); BlockPath(p); RefreshApps(); }
+            if (ViewItem(sel)) { wchar_t p[MAX_PATH]; wcscpy(p, g_items[g_view[sel]].path); BlockPath(p); RefreshApps(); }
             break;
         }
         case IDM_ROW_CLEAR: {
             int sel = ListView_GetNextItem(g_list, -1, LVNI_SELECTED);
-            if (sel >= 0 && sel < g_nview) { wchar_t p[MAX_PATH]; wcscpy(p, g_items[g_view[sel]].path); ClearRulePath(p); RefreshApps(); }
+            if (ViewItem(sel)) { wchar_t p[MAX_PATH]; wcscpy(p, g_items[g_view[sel]].path); ClearRulePath(p); RefreshApps(); }
             break;
         }
         case IDM_REFRESH: RefreshApps(); break;
