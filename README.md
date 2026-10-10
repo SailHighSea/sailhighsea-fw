@@ -54,6 +54,9 @@ something gets blocked, a small pop-up offers to allow it, for good or for a lim
 - **Connection log.** *Options > Connection log...* lists the connections that were blocked in this
   session (time, application, protocol, remote address, repeat count) with **Allow App** and
   **Copy**, which makes it easy to see what to allow.
+- **Network.** *Options > Network...* shows a live 60-second Send / Receive graph, the current rates and
+  the adapter details (name, SSID, connection type, link speed, IPv4 / IPv6, signal strength). It reads
+  the adapter counters once a second and only while the window is open.
 - **Options.** Start with Windows (an elevated scheduled task, no UAC prompt), start minimized,
   close / minimize to tray, always on top, allow DNS (port 53), keep filters after reboot, disable
   filters on exit, hide Windows system apps, show only running apps.

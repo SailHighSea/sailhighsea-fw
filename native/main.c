@@ -17,7 +17,11 @@
 #define WINVER 0x0A00
 #define _WIN32_WINNT 0x0A00
 #define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
+#include <iphlpapi.h>
+#include <wlanapi.h>
 #include <commctrl.h>
 #include <commdlg.h>
 #include <shellapi.h>
@@ -70,7 +74,7 @@ static const GUID COND_RPORT = {0xc35a604d, 0xd22b, 0x4e1a, {0x91, 0xb4, 0x68, 0
 #define NE_APP_ID_SET 0x20u
 
 enum { IDC_TOGGLE = 101, IDC_ALLOW, IDC_ADD, IDC_NOTIFY, IDC_OPTIONS, IDC_SEARCH, IDC_LIST, IDC_STATUS, IDC_DNSBTN,
-       IDM_DNS = 201, IDM_PERM, IDM_REFRESH, IDM_FOLDER, IDM_ABOUT, IDM_OPENLOG, IDM_CONNLOG };
+       IDM_DNS = 201, IDM_PERM, IDM_REFRESH, IDM_FOLDER, IDM_ABOUT, IDM_OPENLOG, IDM_CONNLOG, IDM_NETWORK };
 #define IDC_NOTIF_ALLOW 301
 #define IDC_NOTIF_IGNORE 302
 #define IDC_NOTIF_15 303
@@ -1797,6 +1801,8 @@ static LRESULT CALLBACK LogProc(HWND h, UINT m, WPARAM w, LPARAM l)
     return DefWindowProcW(h, m, w, l);
 }
 
+static LRESULT CALLBACK HeaderProc(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR ref);
+
 static void ShowConnLog(void)
 {
     static BOOL registered; UINT dpi = g_hwnd ? GetDpiForWindow(g_hwnd) : GetDpiForSystem(); RECT wr = {0, 0, 0, 0}; BOOL dark = g_dark; LVCOLUMNW col;
@@ -1824,6 +1830,7 @@ static void ShowConnLog(void)
     ListView_SetBkColor(g_logList, cBg); ListView_SetTextBkColor(g_logList, cBg); ListView_SetTextColor(g_logList, cText);
     ZeroMemory(&col, sizeof col); col.mask = LVCF_TEXT | LVCF_WIDTH;
     for (int i = 0; i < 6; i++) { col.pszText = (LPWSTR)names[i]; col.cx = LS(widths[i]); ListView_InsertColumn(g_logList, i, &col); }
+    SetWindowSubclass(ListView_GetHeader(g_logList), HeaderProc, 1, 1);      /* same themed header as the main list */
     FlatButton(MakeChild(g_logWnd, L"BUTTON", L"Allow App", BS_OWNERDRAW | WS_TABSTOP, 0, 0, 10, 10, IDC_LOG_ALLOW));
     FlatButton(MakeChild(g_logWnd, L"BUTTON", L"Copy", BS_OWNERDRAW | WS_TABSTOP, 0, 0, 10, 10, IDC_LOG_COPY));
     FlatButton(MakeChild(g_logWnd, L"BUTTON", L"Clear", BS_OWNERDRAW | WS_TABSTOP, 0, 0, 10, 10, IDC_LOG_CLEAR));
@@ -1831,6 +1838,357 @@ static void ShowConnLog(void)
     LogLayout(g_logWnd);
     ShowWindow(g_logWnd, SW_SHOW);
     SetForegroundWindow(g_logWnd);
+    #undef LS
+}
+
+/* ------------------------------------------------------------------ */
+/* Network: live throughput graph and adapter details (Options > Network) */
+/* Reads the adapter byte counters once a second, only while open.      */
+/* ------------------------------------------------------------------ */
+#define NET_N 60
+#define IDC_NET_ADAPTER 720
+#define IDC_NET_CLOSE 721
+typedef struct { DWORD index, type; BOOL gw; wchar_t guid[48], name[64], desc[96], v4[20], v6[48]; } NetAd;
+static NetAd g_nad[12]; static int g_nnad;
+static DWORD g_netSel;                                   /* chosen interface index, 0 = automatic */
+static double g_nrx[NET_N], g_ntx[NET_N];                /* bits per second, newest last */
+static ULONG64 g_nprevIn, g_nprevOut, g_nlinkSpeed; static DWORD g_nprevTick, g_nprevIdx;
+static struct { BOOL isWifi, on; wchar_t ssid[48]; int phy, quality; } g_wifi;
+static HWND g_netWnd; static HFONT g_netBig; static BOOL g_netBigOwn;
+
+static void NetEnum(void)
+{
+    ULONG sz = 16384, r, fl = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+    IP_ADAPTER_ADDRESSES *buf = (IP_ADAPTER_ADDRESSES *)malloc(sz), *a;
+    typedef PWSTR (NTAPI *PRtlV6)(const IN6_ADDR *, PWSTR);
+    PRtlV6 v6str = (PRtlV6)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlIpv6AddressToStringW");
+    g_nnad = 0;
+    if (!buf) return;
+    r = GetAdaptersAddresses(AF_UNSPEC, fl, NULL, buf, &sz);
+    if (r == ERROR_BUFFER_OVERFLOW) {
+        free(buf); buf = (IP_ADAPTER_ADDRESSES *)malloc(sz);
+        if (!buf) return;
+        r = GetAdaptersAddresses(AF_UNSPEC, fl, NULL, buf, &sz);
+    }
+    if (r == NO_ERROR) for (a = buf; a && g_nnad < 12; a = a->Next) {
+        NetAd *d; IP_ADAPTER_UNICAST_ADDRESS *u;
+        if (a->OperStatus != IfOperStatusUp || a->IfType == IF_TYPE_SOFTWARE_LOOPBACK || a->IfType == 131 /* Teredo */) continue;
+        d = &g_nad[g_nnad++]; ZeroMemory(d, sizeof *d);
+        d->index = a->IfIndex; d->type = a->IfType; d->gw = a->FirstGatewayAddress != NULL;
+        MultiByteToWideChar(CP_ACP, 0, a->AdapterName, -1, d->guid, 48);
+        if (a->FriendlyName) wcsncpy(d->name, a->FriendlyName, 63);
+        if (a->Description) wcsncpy(d->desc, a->Description, 95);
+        for (u = a->FirstUnicastAddress; u; u = u->Next) {
+            SOCKADDR *sa = u->Address.lpSockaddr;
+            if (!sa) continue;
+            if (sa->sa_family == AF_INET && !d->v4[0]) {
+                const BYTE *b = (const BYTE *)&((SOCKADDR_IN *)sa)->sin_addr;
+                swprintf(d->v4, 20, L"%u.%u.%u.%u", b[0], b[1], b[2], b[3]);
+            } else if (sa->sa_family == AF_INET6 && v6str) {
+                const IN6_ADDR *ip = &((SOCKADDR_IN6 *)sa)->sin6_addr;
+                BOOL ll = ip->u.Byte[0] == 0xfe && (ip->u.Byte[1] & 0xc0) == 0x80;
+                if (!d->v6[0] || (!ll && _wcsnicmp(d->v6, L"fe80", 4) == 0)) v6str(ip, d->v6);   /* prefer a global address over link-local */
+            }
+        }
+    }
+    free(buf);
+}
+
+static int NetSel(void)
+{
+    int i;
+    if (g_netSel) for (i = 0; i < g_nnad; i++) if (g_nad[i].index == g_netSel) return i;
+    for (i = 0; i < g_nnad; i++) if (g_nad[i].gw) return i;       /* automatic: the adapter that has the default route */
+    return g_nnad ? 0 : -1;
+}
+
+/* Wi-Fi details through wlanapi.dll, loaded on demand so machines without it still work. */
+static void NetWifi(const NetAd *ad)
+{
+    typedef DWORD (WINAPI *POpen)(DWORD, PVOID, PDWORD, PHANDLE);
+    typedef DWORD (WINAPI *PClose)(HANDLE, PVOID);
+    typedef DWORD (WINAPI *PQuery)(HANDLE, const GUID *, WLAN_INTF_OPCODE, PVOID, PDWORD, PVOID *, PWLAN_OPCODE_VALUE_TYPE);
+    typedef VOID (WINAPI *PFree)(PVOID);
+    static HMODULE m; static POpen fo; static PClose fc; static PQuery fq; static PFree ff; static BOOL tried;
+    HANDLE hc = NULL; DWORD ver = 0, sz = 0; WLAN_CONNECTION_ATTRIBUTES *at = NULL; GUID g;
+    ZeroMemory(&g_wifi, sizeof g_wifi);
+    if (ad->type != IF_TYPE_IEEE80211) return;
+    g_wifi.isWifi = TRUE;
+    if (!tried) {
+        tried = TRUE; m = LoadLibraryW(L"wlanapi.dll");
+        if (m) { fo = (POpen)GetProcAddress(m, "WlanOpenHandle"); fc = (PClose)GetProcAddress(m, "WlanCloseHandle");
+                 fq = (PQuery)GetProcAddress(m, "WlanQueryInterface"); ff = (PFree)GetProcAddress(m, "WlanFreeMemory"); }
+    }
+    if (!fo || !fc || !fq || !ff || CLSIDFromString(ad->guid, &g) != S_OK) return;
+    if (fo(2, NULL, &ver, &hc) != ERROR_SUCCESS) return;
+    if (fq(hc, &g, wlan_intf_opcode_current_connection, NULL, &sz, (PVOID *)&at, NULL) == ERROR_SUCCESS && at) {
+        if (at->isState == wlan_interface_state_connected) {
+            char s[40]; ULONG n = at->wlanAssociationAttributes.dot11Ssid.uSSIDLength;
+            if (n > 32) n = 32;
+            memcpy(s, at->wlanAssociationAttributes.dot11Ssid.ucSSID, n); s[n] = 0;
+            MultiByteToWideChar(CP_UTF8, 0, s, -1, g_wifi.ssid, 48);
+            g_wifi.phy = (int)at->wlanAssociationAttributes.dot11PhyType;
+            g_wifi.quality = (int)at->wlanAssociationAttributes.wlanSignalQuality;
+            g_wifi.on = TRUE;
+        }
+        ff(at);
+    }
+    fc(hc, NULL);
+}
+
+static void NetTick(HWND h)
+{
+    static unsigned n; MIB_IF_ROW2 row; int si; DWORD now = GetTickCount();
+    if (n++ % 5 == 0 || !g_nnad) {
+        NetEnum(); si = NetSel();
+        if (si >= 0) NetWifi(&g_nad[si]); else ZeroMemory(&g_wifi, sizeof g_wifi);
+    }
+    si = NetSel();
+    memmove(&g_nrx[0], &g_nrx[1], sizeof(double) * (NET_N - 1)); memmove(&g_ntx[0], &g_ntx[1], sizeof(double) * (NET_N - 1));
+    g_nrx[NET_N - 1] = g_ntx[NET_N - 1] = 0;
+    ZeroMemory(&row, sizeof row);
+    if (si >= 0 && (row.InterfaceIndex = g_nad[si].index, GetIfEntry2(&row) == NO_ERROR)) {
+        g_nlinkSpeed = row.ReceiveLinkSpeed;
+        if (g_nprevIdx == g_nad[si].index && g_nprevTick) {
+            double dt = (double)(now - g_nprevTick) / 1000.0;
+            if (dt < 0.2) dt = 0.2;
+            if (row.InOctets >= g_nprevIn) g_nrx[NET_N - 1] = (double)(row.InOctets - g_nprevIn) * 8.0 / dt;
+            if (row.OutOctets >= g_nprevOut) g_ntx[NET_N - 1] = (double)(row.OutOctets - g_nprevOut) * 8.0 / dt;
+        } else { ZeroMemory(g_nrx, sizeof g_nrx); ZeroMemory(g_ntx, sizeof g_ntx); }       /* adapter changed: start a fresh graph */
+        g_nprevIdx = g_nad[si].index; g_nprevIn = row.InOctets; g_nprevOut = row.OutOctets; g_nprevTick = now;
+    } else { g_nprevTick = 0; g_nlinkSpeed = 0; }
+    if (si >= 0) {
+        wchar_t t[120], cur[120]; wchar_t nm[28];
+        wcsncpy(nm, g_nad[si].name, 27); nm[27] = 0;
+        swprintf(t, 120, L"Adapter: %ls  \x25BE", nm);
+        GetWindowTextW(GetDlgItem(h, IDC_NET_ADAPTER), cur, 120);
+        if (wcscmp(t, cur) != 0) SetWindowTextW(GetDlgItem(h, IDC_NET_ADAPTER), t);
+    }
+    if (!IsIconic(h)) InvalidateRect(h, NULL, FALSE);
+}
+
+static void FmtRate(double bps, wchar_t *o, size_t n)
+{
+    if (bps >= 1e9) swprintf(o, n, L"%.2f Gbps", bps / 1e9);
+    else if (bps >= 1e6) swprintf(o, n, L"%.1f Mbps", bps / 1e6);
+    else if (bps >= 1e3) swprintf(o, n, L"%.0f Kbps", bps / 1e3);
+    else swprintf(o, n, L"%.0f bps", bps);
+}
+
+static double NetNiceMax(double v)
+{
+    static const double st[3] = { 1, 2, 5 };
+    for (double e = 1e5; e < 1e12; e *= 10) for (int i = 0; i < 3; i++) if (v <= st[i] * e) return st[i] * e;
+    return 1e12;
+}
+
+static COLORREF NetMix(COLORREF a, COLORREF b, int pct)
+{
+    return RGB(GetRValue(a) + (GetRValue(b) - GetRValue(a)) * pct / 100, GetGValue(a) + (GetGValue(b) - GetGValue(a)) * pct / 100,
+               GetBValue(a) + (GetBValue(b) - GetBValue(a)) * pct / 100);
+}
+
+static void NetText(HDC dc, HFONT f, COLORREF c, int x, int y, int x2, const wchar_t *t, UINT fmt)
+{
+    RECT r; r.left = x; r.top = y; r.right = x2; r.bottom = y + 200;
+    SelectObject(dc, f); SetTextColor(dc, c);
+    DrawTextW(dc, t, -1, &r, fmt | DT_NOPREFIX | DT_SINGLELINE | DT_END_ELLIPSIS);
+}
+
+static void NetSeries(HDC dc, const double *v, int x0, int y0, int w, int h, double mx, COLORREF col, int pw)
+{
+    POINT pt[NET_N + 2]; HPEN pen, op; HBRUSH br, ob;
+    for (int i = 0; i < NET_N; i++) {
+        double f = v[i] / mx; if (f > 1) f = 1;
+        pt[i].x = x0 + (int)((double)(w - 1) * i / (NET_N - 1)); pt[i].y = y0 + h - 1 - (int)(f * (h - 2));
+    }
+    pt[NET_N].x = pt[NET_N - 1].x; pt[NET_N].y = y0 + h - 1; pt[NET_N + 1].x = pt[0].x; pt[NET_N + 1].y = y0 + h - 1;
+    br = CreateSolidBrush(NetMix(cBg, col, 28)); ob = (HBRUSH)SelectObject(dc, br);
+    op = (HPEN)SelectObject(dc, GetStockObject(NULL_PEN));
+    Polygon(dc, pt, NET_N + 2);
+    SelectObject(dc, ob); DeleteObject(br);
+    pen = CreatePen(PS_SOLID, pw, col); SelectObject(dc, pen);
+    Polyline(dc, pt, NET_N);
+    SelectObject(dc, op); DeleteObject(pen);
+}
+
+static const wchar_t *NetPhyName(int p)
+{
+    switch (p) { case 4: return L"802.11a"; case 5: return L"802.11b"; case 6: return L"802.11g"; case 7: return L"802.11n"; case 8: return L"802.11ac";
+                 case 9: return L"802.11ad"; case 10: return L"802.11ax"; case 11: return L"802.11be"; default: return L"Wi-Fi"; }
+}
+
+static void NetPaint(HWND h)
+{
+    PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps), md; HBITMAP bmp, obm; HBRUSH b; RECT rc, gr; UINT dpi = GetDpiForWindow(h);
+    int W, H, pad, bar, y, gx, gy, gw, gh, nrows = 0, si = NetSel(), rowh, i;
+    const wchar_t *lab[8], *val[8]; wchar_t bufs[8][96], t[96], t2[48]; double mx = 0;
+    COLORREF cRx = g_dark ? RGB(90, 160, 255) : RGB(20, 100, 220), cTx = cAmber;
+    #define LS(v) MulDiv((v), (int)dpi, 96)
+    GetClientRect(h, &rc); W = rc.right; H = rc.bottom;
+    md = CreateCompatibleDC(dc); bmp = CreateCompatibleBitmap(dc, W, H); obm = (HBITMAP)SelectObject(md, bmp);
+    b = CreateSolidBrush(cBg); FillRect(md, &rc, b); DeleteObject(b);
+    SetBkMode(md, TRANSPARENT);
+    pad = LS(18); bar = LS(34) + 2 * LS(10); rowh = LS(22);
+
+    if (si >= 0) {
+        const NetAd *ad = &g_nad[si];
+        #define ROW(l, v) do { lab[nrows] = (l); val[nrows] = (v); nrows++; } while (0)
+        if (g_wifi.isWifi) ROW(L"SSID", g_wifi.on ? g_wifi.ssid : L"Not connected");
+        ROW(L"Adapter name", ad->name);
+        wcscpy(bufs[2], g_wifi.on ? NetPhyName(g_wifi.phy) : ad->type == IF_TYPE_ETHERNET_CSMACD ? L"Ethernet" : g_wifi.isWifi ? L"Wi-Fi" : L"Other");
+        ROW(L"Connection type", bufs[2]);
+        if (g_nlinkSpeed && g_nlinkSpeed != (ULONG64)-1) { FmtRate((double)g_nlinkSpeed, bufs[3], 96); ROW(L"Link speed", bufs[3]); }
+        ROW(L"IPv4 address", ad->v4[0] ? ad->v4 : L"-");
+        ROW(L"IPv6 address", ad->v6[0] ? ad->v6 : L"-");
+        if (g_wifi.on) {
+            const wchar_t *q = g_wifi.quality >= 80 ? L"Excellent" : g_wifi.quality >= 60 ? L"Good" : g_wifi.quality >= 40 ? L"Fair" : L"Weak";
+            swprintf(bufs[6], 96, L"%ls (%d%%)", q, g_wifi.quality); ROW(L"Signal strength", bufs[6]);
+        }
+        #undef ROW
+        NetText(md, g_netBig, cText, pad, pad, pad + LS(260), ad->name, DT_LEFT);
+        NetText(md, g_font, cDim, pad + LS(270), pad + LS(4), W - pad, ad->desc, DT_RIGHT);
+    } else {
+        NetText(md, g_netBig, cText, pad, pad, W - pad, L"No active network adapter", DT_LEFT);
+    }
+    y = pad + LS(44);
+    NetText(md, g_font, cDim, pad, y, pad + LS(260), L"Throughput - last 60 seconds", DT_LEFT);
+    {   /* legend */
+        HBRUSH q; RECT sq; int lx = W - pad - LS(150);
+        q = CreateSolidBrush(cRx); sq.left = lx; sq.top = y + LS(4); sq.right = lx + LS(10); sq.bottom = sq.top + LS(10); FillRect(md, &sq, q); DeleteObject(q);
+        NetText(md, g_font, cDim, lx + LS(16), y, lx + LS(80), L"Receive", DT_LEFT);
+        lx += LS(84);
+        q = CreateSolidBrush(cTx); sq.left = lx; sq.right = lx + LS(10); FillRect(md, &sq, q); DeleteObject(q);
+        NetText(md, g_font, cDim, lx + LS(16), y, lx + LS(66), L"Send", DT_LEFT);
+    }
+    y += LS(26);
+    gx = pad; gy = y; gw = W - 2 * pad;
+    gh = H - bar - gy - LS(18) - LS(8) - LS(54) - LS(10) - nrows * rowh;
+    if (gh < LS(80)) gh = LS(80);
+    for (i = 0; i < NET_N; i++) { if (g_nrx[i] > mx) mx = g_nrx[i]; if (g_ntx[i] > mx) mx = g_ntx[i]; }
+    mx = NetNiceMax(mx);
+    gr.left = gx; gr.top = gy; gr.right = gx + gw; gr.bottom = gy + gh;
+    {
+        HPEN pen = CreatePen(PS_SOLID, 1, NetMix(cBg, cLine, 55)), op = (HPEN)SelectObject(md, pen);
+        for (i = 1; i < 4; i++) { MoveToEx(md, gx, gy + gh * i / 4, NULL); LineTo(md, gx + gw, gy + gh * i / 4); }
+        for (i = 1; i < 6; i++) { MoveToEx(md, gx + gw * i / 6, gy, NULL); LineTo(md, gx + gw * i / 6, gy + gh); }
+        SelectObject(md, op); DeleteObject(pen);
+    }
+    NetSeries(md, g_nrx, gx, gy, gw, gh, mx, cRx, LS(2) > 2 ? LS(2) : 2);
+    NetSeries(md, g_ntx, gx, gy, gw, gh, mx, cTx, LS(2) > 2 ? LS(2) : 2);
+    {
+        HPEN pen = CreatePen(PS_SOLID, 1, cLine), op = (HPEN)SelectObject(md, pen); HGDIOBJ ob2 = SelectObject(md, GetStockObject(NULL_BRUSH));
+        Rectangle(md, gr.left, gr.top, gr.right, gr.bottom);
+        SelectObject(md, ob2); SelectObject(md, op); DeleteObject(pen);
+    }
+    FmtRate(mx, t, 96);
+    NetText(md, g_font, cDim, gx + LS(6), gy + LS(4), gx + LS(160), t, DT_LEFT);
+    NetText(md, g_font, cDim, gx, gy + gh + LS(3), gx + LS(160), L"60 seconds", DT_LEFT);
+    NetText(md, g_font, cDim, gx + gw - LS(60), gy + gh + LS(3), gx + gw, L"0", DT_RIGHT);
+    y = gy + gh + LS(18) + LS(8);
+
+    {   /* current rates */
+        HBRUSH q; RECT sq; int half = W / 2;
+        FmtRate(g_ntx[NET_N - 1], t, 96); FmtRate(g_nrx[NET_N - 1], t2, 48);
+        q = CreateSolidBrush(cTx); sq.left = pad; sq.top = y + LS(4); sq.right = pad + LS(10); sq.bottom = sq.top + LS(10); FillRect(md, &sq, q); DeleteObject(q);
+        NetText(md, g_font, cDim, pad + LS(16), y, half, L"Send", DT_LEFT);
+        NetText(md, g_netBig, cText, pad, y + LS(18), half, t, DT_LEFT);
+        q = CreateSolidBrush(cRx); sq.left = half; sq.right = half + LS(10); FillRect(md, &sq, q); DeleteObject(q);
+        NetText(md, g_font, cDim, half + LS(16), y, W - pad, L"Receive", DT_LEFT);
+        NetText(md, g_netBig, cText, half, y + LS(18), W - pad, t2, DT_LEFT);
+    }
+    y += LS(54) + LS(10);
+    for (i = 0; i < nrows; i++) {
+        NetText(md, g_font, cDim, pad, y + i * rowh, pad + LS(150), lab[i], DT_LEFT);
+        NetText(md, g_font, cText, pad + LS(160), y + i * rowh, W - pad, val[i], DT_LEFT);
+    }
+    BitBlt(dc, 0, 0, W, H, md, 0, 0, SRCCOPY);
+    SelectObject(md, obm); DeleteObject(bmp); DeleteDC(md);
+    EndPaint(h, &ps);
+    #undef LS
+}
+
+static void NetLayout(HWND h)
+{
+    RECT rc; UINT dpi = GetDpiForWindow(h); int pad, bw, bh, bar, W, H;
+    #define LS(v) MulDiv((v), (int)dpi, 96)
+    GetClientRect(h, &rc); W = rc.right; H = rc.bottom;
+    pad = LS(10); bw = LS(120); bh = LS(34); bar = bh + 2 * pad;
+    MoveWindow(GetDlgItem(h, IDC_NET_ADAPTER), LS(18), H - bar + pad, LS(300), bh, TRUE);
+    MoveWindow(GetDlgItem(h, IDC_NET_CLOSE), W - LS(18) - bw, H - bar + pad, bw, bh, TRUE);
+    #undef LS
+}
+
+static LRESULT CALLBACK NetProc(HWND h, UINT m, WPARAM w, LPARAM l)
+{
+    switch (m) {
+    case WM_SIZE: NetLayout(h); InvalidateRect(h, NULL, FALSE); return 0;
+    case WM_GETMINMAXINFO:
+        ((MINMAXINFO *)l)->ptMinTrackSize.x = MulDiv(620, (int)GetDpiForWindow(h), 96);
+        ((MINMAXINFO *)l)->ptMinTrackSize.y = MulDiv(560, (int)GetDpiForWindow(h), 96);
+        return 0;
+    case WM_ERASEBKGND: return 1;
+    case WM_PAINT: NetPaint(h); return 0;
+    case WM_TIMER: if (w == 1) NetTick(h); return 0;
+    case WM_DRAWITEM:
+        if (((DRAWITEMSTRUCT *)l)->CtlType == ODT_BUTTON) { DrawFlatButton((DRAWITEMSTRUCT *)l); return TRUE; }
+        break;
+    case WM_COMMAND:
+        if (LOWORD(w) == IDC_NET_CLOSE) { DestroyWindow(h); return 0; }
+        if (LOWORD(w) == IDC_NET_ADAPTER) {
+            HMENU pm = CreatePopupMenu(); RECT br; int cmd, sel = NetSel();
+            AppendMenuW(pm, MF_STRING | (g_netSel == 0 ? MF_CHECKED : 0), 6000, L"Automatic (internet adapter)");
+            for (int i = 0; i < g_nnad; i++) {
+                wchar_t t[120]; swprintf(t, 120, L"%ls  -  %ls", g_nad[i].name, g_nad[i].desc);
+                AppendMenuW(pm, MF_STRING | (g_netSel && i == sel ? MF_CHECKED : 0), 6001 + i, t);
+            }
+            GetWindowRect(GetDlgItem(h, IDC_NET_ADAPTER), &br);
+            cmd = TrackPopupMenu(pm, TPM_RETURNCMD | TPM_BOTTOMALIGN | TPM_LEFTALIGN, br.left, br.top, 0, h, NULL);
+            DestroyMenu(pm);
+            if (cmd == 6000) g_netSel = 0;
+            else if (cmd > 6000 && cmd - 6001 < g_nnad) g_netSel = g_nad[cmd - 6001].index;
+            if (cmd >= 6000) { g_nprevTick = 0; NetTick(h); }
+            return 0;
+        }
+        break;
+    case WM_CLOSE: DestroyWindow(h); return 0;
+    case WM_DESTROY:
+        KillTimer(h, 1); g_netWnd = NULL;
+        if (g_netBig && g_netBigOwn) DeleteObject(g_netBig);
+        g_netBig = NULL;
+        return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+
+static void ShowNetwork(void)
+{
+    static BOOL registered; UINT dpi = g_hwnd ? GetDpiForWindow(g_hwnd) : GetDpiForSystem(); RECT wr = {0, 0, 0, 0}; BOOL dark = g_dark; LOGFONTW lf;
+    #define LS(v) MulDiv((v), (int)dpi, 96)
+    if (g_netWnd) { if (IsIconic(g_netWnd)) ShowWindow(g_netWnd, SW_RESTORE); SetForegroundWindow(g_netWnd); return; }
+    if (!registered) {
+        WNDCLASSW wc; ZeroMemory(&wc, sizeof wc);
+        wc.lpfnWndProc = NetProc; wc.hInstance = g_inst; wc.hCursor = LoadCursor(NULL, IDC_ARROW); wc.lpszClassName = L"SHSFWNet";
+        wc.hIcon = g_iconBig; RegisterClassW(&wc); registered = TRUE;
+    }
+    if (g_hwnd) GetWindowRect(g_hwnd, &wr);
+    g_netWnd = CreateWindowExW(0, L"SHSFWNet", L"Network", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+                               wr.left + LS(60), wr.top + LS(60), LS(700), LS(660), NULL, NULL, g_inst, NULL);
+    if (!g_netWnd) return;
+    if (g_iconSmall) SendMessageW(g_netWnd, WM_SETICON, ICON_SMALL, (LPARAM)g_iconSmall);
+    if (g_iconBig) SendMessageW(g_netWnd, WM_SETICON, ICON_BIG, (LPARAM)g_iconBig);
+    DwmSetWindowAttribute(g_netWnd, 20, &dark, sizeof dark);
+    GetObjectW(g_font, sizeof lf, &lf); lf.lfHeight = lf.lfHeight * 14 / 10; lf.lfWeight = 600;
+    g_netBig = CreateFontIndirectW(&lf); g_netBigOwn = g_netBig != NULL;
+    if (!g_netBig) g_netBig = g_fontBold;                 /* shared font: not deleted on close */
+    FlatButton(MakeChild(g_netWnd, L"BUTTON", L"Adapter", BS_OWNERDRAW | WS_TABSTOP, 0, 0, 10, 10, IDC_NET_ADAPTER));
+    FlatButton(MakeChild(g_netWnd, L"BUTTON", L"Close", BS_OWNERDRAW | WS_TABSTOP, 0, 0, 10, 10, IDC_NET_CLOSE));
+    ZeroMemory(g_nrx, sizeof g_nrx); ZeroMemory(g_ntx, sizeof g_ntx); g_nprevTick = 0; g_nnad = 0;
+    NetLayout(g_netWnd);
+    NetTick(g_netWnd);
+    SetTimer(g_netWnd, 1, 1000, NULL);
+    ShowWindow(g_netWnd, SW_SHOW);
+    SetForegroundWindow(g_netWnd);
     #undef LS
 }
 
@@ -1899,10 +2257,24 @@ static BOOL SystemUsesDark(void)
     return v == 0;
 }
 
+/* Makes every menu (Options, tray, right-click, DNS) follow the app theme: dark or light, with the soft rounded Windows 11 look.
+   Uses the two long-standing uxtheme entry points (135 SetPreferredAppMode, 136 FlushMenuThemes); if they are missing nothing changes. */
+static void ApplyMenuTheme(void)
+{
+    typedef int (WINAPI *SetModeFn)(int);
+    typedef void (WINAPI *FlushFn)(void);
+    HMODULE ux = GetModuleHandleW(L"uxtheme.dll");
+    SetModeFn setMode = ux ? (SetModeFn)(void *)GetProcAddress(ux, MAKEINTRESOURCEA(135)) : NULL;
+    FlushFn flush = ux ? (FlushFn)(void *)GetProcAddress(ux, MAKEINTRESOURCEA(136)) : NULL;
+    if (setMode) setMode(g_dark ? 2 /* ForceDark */ : 3 /* ForceLight */);
+    if (flush) flush();
+}
+
 static void ApplyTheme(void)
 {
     BOOL dark;
     g_dark = (g_theme == 0) || (g_theme == 2 && SystemUsesDark());
+    ApplyMenuTheme();
     if (g_dark) {
         cBg = RGB(30, 30, 34); cPanel = RGB(40, 40, 46); cText = RGB(228, 228, 232); cDim = RGB(150, 150, 160);
         cGreen = RGB(110, 214, 140); cRed = RGB(240, 110, 110); cLine = RGB(70, 70, 78); cAmber = RGB(244, 190, 90);
@@ -1924,6 +2296,10 @@ static void ApplyTheme(void)
         ThemeCtl(g_logList);
         ListView_SetBkColor(g_logList, cBg); ListView_SetTextBkColor(g_logList, cBg); ListView_SetTextColor(g_logList, cText);
         RedrawWindow(g_logWnd, NULL, NULL, RDW_ERASE | RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_FRAME);
+    }
+    if (g_netWnd) {
+        DwmSetWindowAttribute(g_netWnd, 20, &dark, sizeof dark);
+        RedrawWindow(g_netWnd, NULL, NULL, RDW_ERASE | RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_FRAME);
     }
     RedrawWindow(g_hwnd, NULL, NULL, RDW_ERASE | RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_FRAME | RDW_UPDATENOW);
 }
@@ -2021,7 +2397,7 @@ static LRESULT CALLBACK ListHoverProc(HWND h, UINT m, WPARAM w, LPARAM l, UINT_P
 
 static LRESULT CALLBACK HeaderProc(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR ref)
 {
-    (void)id; (void)ref;
+    (void)id;       /* ref: 0 = main list (shows the sort arrow), 1 = another list's header (no arrow) */
     if (m == WM_ERASEBKGND) return 1;
     if (m == WM_PAINT) {
         PAINTSTRUCT ps; RECT rc;
@@ -2041,7 +2417,7 @@ static LRESULT CALLBACK HeaderProc(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR 
             hi.mask = HDI_TEXT; hi.pszText = t; hi.cchTextMax = 48; t[0] = 0;
             Header_GetItem(h, i, &hi);
             MoveToEx(dc, r.right - 1, r.top + 4, NULL); LineTo(dc, r.right - 1, r.bottom - 4);
-            if (i == g_sortCol) wcscat(t, g_sortAsc ? L"  \u25B2" : L"  \u25BC");
+            if (i == g_sortCol && !ref) wcscat(t, g_sortAsc ? L"  \u25B2" : L"  \u25BC");
             r.left += 8;
             DrawTextW(dc, t, -1, &r, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS);
         }
@@ -2163,6 +2539,7 @@ static void QuitApp(void)
     if (g_offExit && g_filtersOn) { StopWatching(); DisableFilters(); g_filtersOn = FALSE; }
     if (g_popup) { DestroyWindow(g_popup); g_popup = NULL; }
     if (g_logWnd) DestroyWindow(g_logWnd);
+    if (g_netWnd) DestroyWindow(g_netWnd);
     DestroyWindow(g_hwnd);
 }
 
@@ -2569,6 +2946,7 @@ static HMENU BuildOptionsMenu(void)
     AppendMenuW(m, MF_STRING, IDM_REFRESH, L"Refresh list\tF5");
     AppendMenuW(m, MF_STRING, IDM_PURGE, L"Purge invalid entries...");
     AppendMenuW(m, MF_STRING, IDM_CONNLOG, L"Connection log...");
+    AppendMenuW(m, MF_STRING, IDM_NETWORK, L"Network...");
     AppendMenuW(m, MF_STRING, IDM_FOLDER, L"Open data folder");
     AppendMenuW(m, MF_STRING, IDM_OPENLOG, L"Open debug log");
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
@@ -2991,6 +3369,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l)
         case IDM_FOLDER: ShellExecuteW(h, L"open", g_dataDir, NULL, NULL, SW_SHOWNORMAL); break;
         case IDM_ABOUT: ShowAbout(); break;
         case IDM_CONNLOG: ShowConnLog(); break;
+        case IDM_NETWORK: ShowNetwork(); break;
         case IDM_OPENLOG:
             if (GetFileAttributesW(g_logFile) == INVALID_FILE_ATTRIBUTES) Log(L"(log opened by user)");
             ShellExecuteW(h, L"open", g_logFile, NULL, NULL, SW_SHOWNORMAL);

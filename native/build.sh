@@ -12,6 +12,6 @@ $CC -municode -mwindows -Os -s -Wall -Wextra -Wno-unused-parameter -Wno-cast-fun
     -ffunction-sections -fdata-sections -Wl,--gc-sections -static \
     -DAPP_VERSION="L\"$DISPLAY_VER\"" \
     main.c app_res.o -o SailHighSea-Firewall.exe \
-    -lfwpuclnt -lcomctl32 -lcomdlg32 -lshell32 -lole32 -luxtheme -ldwmapi -luser32 -lgdi32 -ladvapi32 -lsecur32 -lgdiplus
+    -lfwpuclnt -lcomctl32 -lcomdlg32 -lshell32 -lole32 -luxtheme -ldwmapi -luser32 -lgdi32 -ladvapi32 -lsecur32 -lgdiplus -liphlpapi
 rm -f app_res.o
 ls -l SailHighSea-Firewall.exe
