@@ -1205,9 +1205,12 @@ static void RebuildView(void)
 
 static void UpdateAllowButton(void)
 {
-    int sel = ListView_GetNextItem(g_list, -1, LVNI_SELECTED);
-    const Item *si = ViewItem(sel);
-    BOOL allowed = si && si->allowed;
+    int sel = -1, n = 0, notAllowed = 0; BOOL allowed;
+    while ((sel = ListView_GetNextItem(g_list, sel, LVNI_SELECTED)) >= 0) {
+        const Item *si = ViewItem(sel);
+        if (si) { n++; if (!si->allowed) notAllowed++; }
+    }
+    allowed = n > 0 && notAllowed == 0;                   /* "Block App" only when everything selected is allowed */
     SetWindowTextW(g_bAllow, allowed ? L"\U0001F6AB Block App" : L"\u2714 Allow App");
 }
 
@@ -1436,15 +1439,51 @@ static void PurgeInvalid(void)
     RefreshApps();
 }
 
+/* Paths of every selected application row (group headers skipped). Caller frees. */
+static PathStr *SelectedPaths(int *n)
+{
+    PathStr *a; int sel = -1, c = 0;
+    *n = 0;
+    a = (PathStr *)malloc(sizeof(PathStr) * (size_t)(g_nview + 1));
+    if (!a) return NULL;
+    while ((sel = ListView_GetNextItem(g_list, sel, LVNI_SELECTED)) >= 0) {
+        const Item *it = ViewItem(sel);
+        if (it) wcscpy(a[c++], it->path);
+    }
+    if (!c) { free(a); return NULL; }
+    *n = c;
+    return a;
+}
+
+enum { SA_ALLOW, SA_ALLOW_NEW, SA_BLOCK, SA_CLEAR };
+static void ApplySelected(int op, int minutes)
+{
+    int n, i; PathStr *p = SelectedPaths(&n);
+    if (!p) return;
+    for (i = 0; i < n; i++) {
+        const Item *it = FindItem(p[i]);
+        switch (op) {
+        case SA_ALLOW: AllowPathFor(p[i], minutes); break;
+        case SA_ALLOW_NEW: if (!it || !it->allowed) AllowPathFor(p[i], 0); break;
+        case SA_BLOCK: BlockPath(p[i]); break;
+        default: ClearRulePath(p[i]); break;
+        }
+    }
+    if (n > 1) ListView_SetItemState(g_list, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);   /* rows move after a change: do not leave a stale selection */
+    free(p);
+    RefreshApps();
+    UpdateAllowButton();
+}
+
 static void ToggleSelected(void)
 {
-    int sel = ListView_GetNextItem(g_list, -1, LVNI_SELECTED);
-    wchar_t path[MAX_PATH];
-    Item *it = ViewItem(sel);
-    if (!it) return;
-    wcscpy(path, it->path);
-    if (it->allowed) BlockPath(path); else AllowPath(path);
-    RefreshApps();
+    int sel = -1, any = 0, notAllowed = 0;
+    while ((sel = ListView_GetNextItem(g_list, sel, LVNI_SELECTED)) >= 0) {
+        const Item *it = ViewItem(sel);
+        if (it) { any++; if (!it->allowed) notAllowed++; }
+    }
+    if (!any) return;
+    ApplySelected(notAllowed ? SA_ALLOW_NEW : SA_BLOCK, 0);   /* anything not allowed in the selection -> allow those; all allowed -> block all */
 }
 
 static void AddApplication(void)
@@ -2482,7 +2521,7 @@ static void CreateControls(HWND hwnd)
     SendMessageW(g_search, WM_SETFONT, (WPARAM)g_font, TRUE);
     SendMessageW(g_search, EM_SETCUEBANNER, TRUE, (LPARAM)L"\U0001F50D Search applications...");
 
-    g_list = CreateWindowExW(0, WC_LISTVIEWW, L"", WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_OWNERDATA | LVS_SHAREIMAGELISTS | LVS_OWNERDRAWFIXED,
+    g_list = CreateWindowExW(0, WC_LISTVIEWW, L"", WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_OWNERDATA | LVS_SHAREIMAGELISTS | LVS_OWNERDRAWFIXED,
                              0, 0, 10, 10, hwnd, (HMENU)IDC_LIST, g_inst, NULL);
     SendMessageW(g_list, WM_SETFONT, (WPARAM)g_font, TRUE);
     ListView_SetExtendedListViewStyle(g_list, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP);
@@ -3122,29 +3161,26 @@ static void DrawListRow(const DRAWITEMSTRUCT *di)
     SelectObject(dc, of);
 }
 
-static void AllowSelectedFor(int minutes)
-{
-    int sel = ListView_GetNextItem(g_list, -1, LVNI_SELECTED);
-    wchar_t path[MAX_PATH];
-    if (!ViewItem(sel)) return;
-    wcscpy(path, g_items[g_view[sel]].path);
-    if (AllowPathFor(path, minutes)) RefreshApps();
-}
+static void AllowSelectedFor(int minutes) { ApplySelected(SA_ALLOW, minutes); }
 
 static void ShowRowMenu(int row)
 {
     const Item *it = &g_items[g_view[row]];
-    HMENU m = CreatePopupMenu(); POINT pt; wchar_t t[64];
-    AppendMenuW(m, MF_STRING | MF_DISABLED, 0, it->name);
+    HMENU m = CreatePopupMenu(); POINT pt; wchar_t t[64]; int nsel = 0, s = -1; BOOL multi;
+    while ((s = ListView_GetNextItem(g_list, s, LVNI_SELECTED)) >= 0) if (ViewItem(s)) nsel++;
+    multi = nsel > 1;
+    if (multi) swprintf(t, 64, L"%d applications selected", nsel);
+    AppendMenuW(m, MF_STRING | MF_DISABLED, 0, multi ? t : it->name);
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
-    if (it->allowed && it->expires) AppendMenuW(m, MF_STRING, IDM_ROW_ALLOW, L"Make permanent");
+    if (multi) AppendMenuW(m, MF_STRING, IDM_ROW_ALLOW, L"Allow");
+    else if (it->allowed && it->expires) AppendMenuW(m, MF_STRING, IDM_ROW_ALLOW, L"Make permanent");
     else if (!it->allowed) AppendMenuW(m, MF_STRING, IDM_ROW_ALLOW, L"Allow");
     for (int k = 0; k < (int)(sizeof g_mins / sizeof g_mins[0]); k++) {
         if (g_mins[k] < 60) swprintf(t, 64, L"Allow for %d minutes", g_mins[k]);
         else swprintf(t, 64, L"Allow for %d hour%ls", g_mins[k] / 60, g_mins[k] == 60 ? L"" : L"s");
         AppendMenuW(m, MF_STRING, IDM_ROW_TIME + k, t);
     }
-    if (it->allowed) { AppendMenuW(m, MF_SEPARATOR, 0, NULL); AppendMenuW(m, MF_STRING, IDM_ROW_BLOCK, L"Block"); AppendMenuW(m, MF_STRING, IDM_ROW_CLEAR, L"Clear rule (No Rule)"); }
+    if (multi || it->allowed) { AppendMenuW(m, MF_SEPARATOR, 0, NULL); AppendMenuW(m, MF_STRING, IDM_ROW_BLOCK, L"Block"); AppendMenuW(m, MF_STRING, IDM_ROW_CLEAR, L"Clear rule (No Rule)"); }
     else if (!it->blocked) { AppendMenuW(m, MF_SEPARATOR, 0, NULL); AppendMenuW(m, MF_STRING, IDM_ROW_BLOCK, L"Mark as blocked"); }
     else { AppendMenuW(m, MF_SEPARATOR, 0, NULL); AppendMenuW(m, MF_STRING, IDM_ROW_CLEAR, L"Clear rule (No Rule)"); }
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
@@ -3204,6 +3240,7 @@ static LRESULT OnNotify(NMHDR *nh)
         NMITEMACTIVATE *ia = (NMITEMACTIVATE *)nh; LVHITTESTINFO ht; int i = ia->iItem;
         if (i < 0) { ZeroMemory(&ht, sizeof ht); ht.pt = ia->ptAction; i = ListView_HitTest(g_list, &ht); }
         if (ViewItem(i)) {
+            if (!(ListView_GetItemState(g_list, i, LVIS_SELECTED) & LVIS_SELECTED)) ListView_SetItemState(g_list, -1, 0, LVIS_SELECTED);   /* right-click inside a selection keeps it */
             ListView_SetItemState(g_list, i, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
             ShowRowMenu(i);
         }
@@ -3422,16 +3459,8 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l)
         case IDM_HL_SYSTEM: g_hl ^= HL_SYSTEM; SaveSettings(); InvalidateRect(g_list, NULL, TRUE); break;
         case IDM_HL_TEMP: g_hl ^= HL_TEMP; SaveSettings(); InvalidateRect(g_list, NULL, TRUE); break;
         case IDM_ROW_ALLOW: AllowSelectedFor(0); break;
-        case IDM_ROW_BLOCK: {
-            int sel = ListView_GetNextItem(g_list, -1, LVNI_SELECTED);
-            if (ViewItem(sel)) { wchar_t p[MAX_PATH]; wcscpy(p, g_items[g_view[sel]].path); BlockPath(p); RefreshApps(); }
-            break;
-        }
-        case IDM_ROW_CLEAR: {
-            int sel = ListView_GetNextItem(g_list, -1, LVNI_SELECTED);
-            if (ViewItem(sel)) { wchar_t p[MAX_PATH]; wcscpy(p, g_items[g_view[sel]].path); ClearRulePath(p); RefreshApps(); }
-            break;
-        }
+        case IDM_ROW_BLOCK: ApplySelected(SA_BLOCK, 0); break;
+        case IDM_ROW_CLEAR: ApplySelected(SA_CLEAR, 0); break;
         case IDM_REFRESH: RefreshApps(); break;
         case IDM_PURGE: PurgeInvalid(); break;
         case IDM_FOLDER: ShellExecuteW(h, L"open", g_dataDir, NULL, NULL, SW_SHOWNORMAL); break;
